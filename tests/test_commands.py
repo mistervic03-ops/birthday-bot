@@ -216,7 +216,7 @@ def test_admin_rejects_non_admin_before_work(monkeypatch) -> None:
     )
 
     assert called is False
-    assert responses == [{"text": "관리자만 사용할 수 있는 명령어예요.", "response_type": "ephemeral"}]
+    assert responses == [{"text": "이 커맨드는 관리자만 사용할 수 있어요 🙏", "response_type": "ephemeral"}]
 
 
 def test_admin_check_fails_closed() -> None:
@@ -246,10 +246,11 @@ def test_status_includes_birthday_registration(monkeypatch) -> None:
     birthday_rows = {
         "UUSER": {"slack_user_id": "UUSER", "birth_month": 3, "birth_day": 15, "email": None},
         "UOTHER": None,
+        "UNORMAL": None,
     }
 
     async def get_receive_wishes(pool, slack_user_id):
-        return True
+        return slack_user_id != "UNORMAL"
 
     async def fetch_active_birthday_for_user(pool, slack_user_id):
         return birthday_rows[slack_user_id]
@@ -274,10 +275,19 @@ def test_status_includes_birthday_registration(monkeypatch) -> None:
             respond=respond,
         )
     )
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UNORMAL", "text": "status"},
+            respond=respond,
+        )
+    )
 
     assert responses == [
-        {"text": "내 생일 채널 공지: 켜짐\n생일 등록됨 (03-15)", "response_type": "ephemeral"},
-        {"text": "내 생일 채널 공지: 켜짐\n생일 미등록", "response_type": "ephemeral"},
+        {"text": "현재 생일 공지를 받고 계세요 🎂\n생일 등록됨 (03-15)", "response_type": "ephemeral"},
+        {"text": "현재 생일 공지를 받고 계세요 🎂\n생일 미등록", "response_type": "ephemeral"},
+        {"text": "현재 생일 공지를 받지 않고 있어요\n생일 미등록", "response_type": "ephemeral"},
     ]
 
 
@@ -520,9 +530,12 @@ def test_admin_test_birthday_sends_without_duplicate_check(monkeypatch) -> None:
     assert client.messages == [
         {
             "channel": "CBIRTHDAY",
-            "text": "🎂 오늘은 <@UUSER> 님의 생일입니다! 다 같이 축하해줘요 🎉",
+            "text": "🎂 오늘은 <@UUSER> 님의 생일이에요! 다 같이 축하해드려요 🎉",
         },
-        {"channel": "UUSER", "text": "생일 축하해요 🎂 오늘 하루 즐겁게 보내세요!"},
+        {
+            "channel": "UUSER",
+            "text": "🎂 <@UUSER> 님, 생일 축하드려요! 오늘 하루 행복하게 보내세요 ☀️",
+        },
     ]
     assert responses == [{"text": "테스트 발송 완료: <@UUSER>", "response_type": "ephemeral"}]
 
@@ -572,7 +585,10 @@ def test_admin_test_weekend_sends_saturday_message_without_duplicate_check(monke
             "channel": "CBIRTHDAY",
             "text": "🎂 이번 주 토요일은 <@UUSER> 님의 생일이에요! 미리 축하 메시지 남겨주세요 🎉",
         },
-        {"channel": "UUSER", "text": "생일 축하해요 🎂 오늘 하루 즐겁게 보내세요!"},
+        {
+            "channel": "UUSER",
+            "text": "🎂 <@UUSER> 님, 생일 축하드려요! 오늘 하루 행복하게 보내세요 ☀️",
+        },
     ]
     assert responses == [{"text": "주말 테스트 발송 완료: <@UUSER>", "response_type": "ephemeral"}]
 
@@ -617,4 +633,4 @@ def test_new_admin_test_commands_reject_non_admin(monkeypatch) -> None:
     )
 
     assert called is False
-    assert responses == [{"text": "관리자만 사용할 수 있는 명령어예요.", "response_type": "ephemeral"}]
+    assert responses == [{"text": "이 커맨드는 관리자만 사용할 수 있어요 🙏", "response_type": "ephemeral"}]

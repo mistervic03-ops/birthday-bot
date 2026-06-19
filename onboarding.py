@@ -12,13 +12,14 @@ from config import Settings
 logger = logging.getLogger(__name__)
 
 ONBOARDING_STATE_KEY = "onboarding_message_ts"
-ONBOARDING_MESSAGE = """🎂 생일 축하봇이 생겼어요!
+ONBOARDING_MESSAGE = """🎂 안녕하세요, 저는 빅스데이예요!
 
-HR 정보를 기반으로 매일 오전 9시, 생일인 분의 채널 공지와 DM을 자동으로 보내드려요.
+매일 오전 9시, 생일인 분의 소식을 이 채널에 알려드리고 당사자분께 DM도 보내드려요.
+HR 정보를 기반으로 자동으로 운영되니 별도 등록은 필요 없어요 😊
 
 ⚙️ 설정 커맨드 (본인에게만 보여요)
-• `/birthday optout` — 내 생일 채널 공지 끄기
-• `/birthday optin` — 다시 켜기
+• `/birthday optout` — 내 생일 공지 끄기
+• `/birthday optin`  — 다시 켜기
 • `/birthday status` — 현재 설정 확인"""
 
 

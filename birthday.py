@@ -28,9 +28,9 @@ from utils import slack_error_reason
 
 logger = logging.getLogger(__name__)
 
-CHANNEL_MESSAGE = "🎂 오늘은 <@{slack_user_id}> 님의 생일입니다! 다 같이 축하해줘요 🎉"
+CHANNEL_MESSAGE = "🎂 오늘은 <@{slack_user_id}> 님의 생일이에요! 다 같이 축하해드려요 🎉"
 WEEKEND_EARLY_MESSAGE = "🎂 이번 주 {weekday_label}은 <@{slack_user_id}> 님의 생일이에요! 미리 축하 메시지 남겨주세요 🎉"
-DM_MESSAGE = "생일 축하해요 🎂 오늘 하루 즐겁게 보내세요!"
+DM_MESSAGE = "🎂 <@{slack_user_id}> 님, 생일 축하드려요! 오늘 하루 행복하게 보내세요 ☀️"
 
 
 @dataclass(frozen=True)
@@ -154,6 +154,6 @@ async def send_today_birthdays(
 
 async def send_birthday_dm(client: AsyncWebClient, slack_user_id: str) -> None:
     try:
-        await client.chat_postMessage(channel=slack_user_id, text=DM_MESSAGE)
+        await client.chat_postMessage(channel=slack_user_id, text=DM_MESSAGE.format(slack_user_id=slack_user_id))
     except SlackApiError:
         logger.warning("Failed to send birthday DM to %s", slack_user_id, exc_info=True)

@@ -112,6 +112,6 @@ def test_record_birthday_post_false_skips_dm(monkeypatch) -> None:
     assert client.messages == [
         {
             "channel": "CBIRTHDAY",
-            "text": "🎂 오늘은 <@UUSER> 님의 생일입니다! 다 같이 축하해줘요 🎉",
+            "text": "🎂 오늘은 <@UUSER> 님의 생일이에요! 다 같이 축하해드려요 🎉",
         },
     ]

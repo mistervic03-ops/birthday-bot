@@ -12,7 +12,8 @@ from utils import slack_error_reason
 logger = logging.getLogger(__name__)
 
 _slack_client: Any | None = None
-PROCESSING_ERROR_MESSAGE = "처리 중 오류가 발생했어요. 잠시 후 다시 시도해주세요."
+PROCESSING_ERROR_MESSAGE = "앗, 처리 중에 문제가 생겼어요. 잠시 후 다시 시도해주세요 🙏"
+USER_NOT_FOUND_MESSAGE = "해당 유저를 찾지 못했어요. 멘션으로 다시 시도해주세요!"
 
 
 SyncRunner = Callable[..., Awaitable[Any]]
@@ -87,7 +88,7 @@ async def route_birthday_command(
         try:
             await db.set_receive_wishes(pool, slack_user_id, False)
             await respond(
-                text="내 생일 채널 공지를 꺼뒀어요.",
+                text="알겠어요! 앞으로 생일 공지를 보내드리지 않을게요 🙂",
                 response_type="ephemeral",
             )
         except Exception:
@@ -99,7 +100,7 @@ async def route_birthday_command(
         try:
             await db.set_receive_wishes(pool, slack_user_id, True)
             await respond(
-                text="내 생일 채널 공지를 다시 켰어요.",
+                text="좋아요! 다시 생일 공지를 보내드릴게요 🎉",
                 response_type="ephemeral",
             )
         except Exception:
@@ -111,10 +112,14 @@ async def route_birthday_command(
         try:
             receive_wishes = await db.get_receive_wishes(pool, slack_user_id)
             birthday_record = await db.fetch_active_birthday_for_user(pool, slack_user_id)
-            status = "켜짐" if receive_wishes else "꺼짐"
+            status = (
+                "현재 생일 공지를 받고 계세요 🎂"
+                if receive_wishes
+                else "현재 생일 공지를 받지 않고 있어요"
+            )
             birthday_status = format_birthday_status(birthday_record)
             await respond(
-                text=f"내 생일 채널 공지: {status}\n{birthday_status}",
+                text=f"{status}\n{birthday_status}",
                 response_type="ephemeral",
             )
         except Exception:
@@ -138,7 +143,7 @@ async def handle_admin_command(
 ) -> None:
     slack_user_id = command["user_id"]
     if not await is_workspace_admin(slack_user_id, settings):
-        await respond(text="관리자만 사용할 수 있는 명령어예요.", response_type="ephemeral")
+        await respond(text="이 커맨드는 관리자만 사용할 수 있어요 🙏", response_type="ephemeral")
         return
 
     raw_parts = (command.get("text") or "").strip().split()
@@ -219,7 +224,7 @@ async def handle_admin_command(
             target_user_id = await resolve_slack_user_id(raw_parts[2])
             birthday = parse_month_day(raw_parts[3])
             if target_user_id is None:
-                await respond(text="해당 유저를 찾을 수 없어요.", response_type="ephemeral")
+                await respond(text=USER_NOT_FOUND_MESSAGE, response_type="ephemeral")
                 return
 
             if birthday is None:
@@ -281,7 +286,7 @@ async def handle_admin_command(
 
         target_user_id = await resolve_slack_user_id(raw_parts[2])
         if target_user_id is None:
-            await respond(text="해당 유저를 찾을 수 없어요.", response_type="ephemeral")
+            await respond(text=USER_NOT_FOUND_MESSAGE, response_type="ephemeral")
             return
 
         try:
@@ -310,7 +315,7 @@ async def handle_admin_command(
 
         target_user_id = await resolve_slack_user_id(raw_parts[2])
         if target_user_id is None:
-            await respond(text="해당 유저를 찾을 수 없어요.", response_type="ephemeral")
+            await respond(text=USER_NOT_FOUND_MESSAGE, response_type="ephemeral")
             return
 
         try:
@@ -450,7 +455,10 @@ async def send_test_birthday(*, settings: Any, target_user_id: str) -> None:
             channel=settings.birthday_channel_id,
             text=CHANNEL_MESSAGE.format(slack_user_id=target_user_id),
         )
-        await _slack_client.chat_postMessage(channel=target_user_id, text=DM_MESSAGE)
+        await _slack_client.chat_postMessage(
+            channel=target_user_id,
+            text=DM_MESSAGE.format(slack_user_id=target_user_id),
+        )
     except Exception as error:
         logger.warning("Failed to send test birthday message", exc_info=True)
         raise SlackSendError(format_slack_send_error(error)) from error
@@ -465,7 +473,10 @@ async def send_test_weekend(*, settings: Any, target_user_id: str) -> None:
     )
     try:
         await _slack_client.chat_postMessage(channel=settings.birthday_channel_id, text=text)
-        await _slack_client.chat_postMessage(channel=target_user_id, text=DM_MESSAGE)
+        await _slack_client.chat_postMessage(
+            channel=target_user_id,
+            text=DM_MESSAGE.format(slack_user_id=target_user_id),
+        )
     except Exception as error:
         logger.warning("Failed to send test weekend message", exc_info=True)
         raise SlackSendError(format_slack_send_error(error)) from error
