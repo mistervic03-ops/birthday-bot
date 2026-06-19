@@ -12,8 +12,8 @@ class Settings:
     slack_app_token: str
     database_url: str
     birthday_channel_id: str
-    google_sheets_id: str
-    google_service_account_json: str
+    google_sheets_id: str | None
+    google_service_account_json: str | None
     timezone: str = "Asia/Seoul"
 
 
@@ -25,8 +25,8 @@ def load_settings() -> Settings:
         slack_app_token=_required_env("SLACK_APP_TOKEN"),
         database_url=_required_env("DATABASE_URL"),
         birthday_channel_id=_required_env("BIRTHDAY_CHANNEL_ID"),
-        google_sheets_id=_required_env("GOOGLE_SHEETS_ID"),
-        google_service_account_json=_required_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
+        google_sheets_id=_optional_env("GOOGLE_SHEETS_ID"),
+        google_service_account_json=_optional_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
     )
 
 
@@ -36,3 +36,6 @@ def _required_env(name: str) -> str:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
 
+
+def _optional_env(name: str) -> str | None:
+    return os.getenv(name) or None

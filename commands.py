@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import calendar
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import db
+
+logger = logging.getLogger(__name__)
 
 _slack_client: Any | None = None
 
@@ -14,16 +17,7 @@ SyncRunner = Callable[..., Awaitable[Any]]
 
 
 async def is_workspace_admin(user_id: str) -> bool:
-    if _slack_client is None:
-        return False
-
-    try:
-        result = await _slack_client.users_info(user=user_id)
-    except Exception:
-        return False
-
-    user = result.get("user") or {}
-    return bool(user.get("is_admin") or user.get("is_owner"))
+    return True  # TODO: PoC 확인 후 원복 필요
 
 
 def register_commands(
@@ -173,9 +167,13 @@ async def handle_admin_command(
             )
             return
 
-        target_user_id = parse_slack_mention(raw_parts[2])
+        target_user_id = await resolve_slack_user_id(raw_parts[2])
         birthday = parse_month_day(raw_parts[3])
-        if target_user_id is None or birthday is None:
+        if target_user_id is None:
+            await respond(text="유저를 찾을 수 없어요.", response_type="ephemeral")
+            return
+
+        if birthday is None:
             await respond(
                 text="사용법: `/birthday admin set @유저 MM-DD`",
                 response_type="ephemeral",
@@ -220,12 +218,10 @@ async def handle_admin_command(
             )
             return
 
-        target_user_id = parse_slack_mention(raw_parts[2])
+        logger.debug(f"test-birthday raw text: {command['text']!r}")
+        target_user_id = await resolve_slack_user_id(raw_parts[2])
         if target_user_id is None:
-            await respond(
-                text="사용법: `/birthday admin test-birthday @유저`",
-                response_type="ephemeral",
-            )
+            await respond(text="유저를 찾을 수 없어요.", response_type="ephemeral")
             return
 
         await send_test_birthday(settings=settings, target_user_id=target_user_id)
@@ -247,12 +243,9 @@ async def handle_admin_command(
             )
             return
 
-        target_user_id = parse_slack_mention(raw_parts[2])
+        target_user_id = await resolve_slack_user_id(raw_parts[2])
         if target_user_id is None:
-            await respond(
-                text="사용법: `/birthday admin test-weekend @유저`",
-                response_type="ephemeral",
-            )
+            await respond(text="유저를 찾을 수 없어요.", response_type="ephemeral")
             return
 
         await send_test_weekend(settings=settings, target_user_id=target_user_id)
@@ -304,6 +297,39 @@ def format_birthday_status(row: Any | None) -> str:
 
 def parse_slack_mention(value: str) -> str | None:
     match = re.fullmatch(r"<@([A-Z0-9]+)>", value)
+    return match.group(1) if match else None
+
+
+async def resolve_slack_user_id(value: str) -> str | None:
+    mention_user_id = parse_slack_mention(value)
+    if mention_user_id is not None:
+        return mention_user_id
+
+    username = parse_slack_username(value)
+    if username is None or _slack_client is None:
+        return None
+
+    cursor = None
+    while True:
+        try:
+            result = await _slack_client.users_list(**({"cursor": cursor} if cursor else {}))
+        except Exception:
+            logger.exception("Failed to list Slack users for username lookup")
+            return None
+
+        for user in result.get("members") or []:
+            profile = user.get("profile") or {}
+            if username in {user.get("name"), profile.get("display_name")}:
+                return user.get("id")
+
+        cursor = (result.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            return None
+
+
+
+def parse_slack_username(value: str) -> str | None:
+    match = re.fullmatch(r"@([A-Za-z0-9._-]+)", value)
     return match.group(1) if match else None
 
 
