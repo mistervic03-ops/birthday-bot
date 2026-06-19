@@ -79,3 +79,39 @@ def test_non_friday_does_not_check_weekend_birthdays(monkeypatch) -> None:
 
     assert fetched_targets == [(6, 18)]
     assert client.messages == []
+
+
+def test_record_birthday_post_false_skips_dm(monkeypatch) -> None:
+    async def fetch_birthdays_for_targets(pool, targets):
+        return [
+            {"slack_user_id": "UUSER", "birth_month": 6, "birth_day": 19, "receive_wishes": True},
+        ]
+
+    async def has_birthday_post(pool, slack_user_id, birthday_date):
+        return False
+
+    async def record_birthday_post(pool, slack_user_id, birthday_date):
+        return False
+
+    monkeypatch.setattr(birthday.db, "fetch_birthdays_for_targets", fetch_birthdays_for_targets)
+    monkeypatch.setattr(birthday.db, "birthday_send_lock", fake_lock)
+    monkeypatch.setattr(birthday.db, "has_birthday_post", has_birthday_post)
+    monkeypatch.setattr(birthday.db, "record_birthday_post", record_birthday_post)
+
+    client = FakeSlackClient()
+    settings = SimpleNamespace(birthday_channel_id="CBIRTHDAY", timezone="Asia/Seoul")
+    run(
+        birthday.send_today_birthdays(
+            pool=object(),
+            client=client,
+            settings=settings,
+            today=date(2026, 6, 19),
+        )
+    )
+
+    assert client.messages == [
+        {
+            "channel": "CBIRTHDAY",
+            "text": "🎂 오늘은 <@UUSER> 님의 생일입니다! 다 같이 축하해줘요 🎉",
+        },
+    ]

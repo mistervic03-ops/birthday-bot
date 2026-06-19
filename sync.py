@@ -17,23 +17,14 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - checked when Excel sync runs.
     load_workbook = None  # type: ignore[assignment]
 
-try:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-except ModuleNotFoundError:  # pragma: no cover - checked when Google Sheets sync runs.
-    service_account = None  # type: ignore[assignment]
-    build = None  # type: ignore[assignment]
-
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 import db
 from config import Settings, load_settings
+from utils import slack_error_reason
 
 logger = logging.getLogger(__name__)
-
-SCOPES = ("https://www.googleapis.com/auth/spreadsheets.readonly",)
-DEFAULT_RANGE = "A:Z"
 
 
 @dataclass(frozen=True)
@@ -47,6 +38,7 @@ class BirthdayRow:
 class SyncResult:
     upserted: int
     deactivated: int
+    skipped: int = 0
 
 
 @dataclass(frozen=True)
@@ -64,19 +56,24 @@ class SlackLookupResult:
 async def sync_hr_sheet(
     *, pool: asyncpg.Pool, client: AsyncWebClient, settings: Settings
 ) -> SyncResult:
-    rows = await read_sheet_rows(settings)
+    rows, skipped = read_excel_rows(settings.hr_excel_path)
     active_slack_user_ids: list[str] = []
     upserted = 0
 
     for row in rows:
         lookup = await resolve_slack_id_for_batch(client, row.email)
         if lookup.abort_batch:
-            logger.error("Aborting HR sheet sync because Slack user lookup failed")
-            return SyncResult(upserted=0, deactivated=0)
+            logger.error(
+                "Aborting HR sheet sync: %s upserted, %s skipped before batch abort",
+                upserted,
+                skipped,
+            )
+            return SyncResult(upserted=upserted, deactivated=0, skipped=skipped)
 
         slack_user_id = lookup.slack_user_id
         if slack_user_id is None:
             logger.warning("Skipping HR row with unmatched email: %s", row.email)
+            skipped += 1
             continue
 
         await db.upsert_birthday(
@@ -95,7 +92,7 @@ async def sync_hr_sheet(
         logger.warning("No Slack users resolved from HR sheet; skipping soft-delete step")
         deactivated = 0
 
-    return SyncResult(upserted=upserted, deactivated=deactivated)
+    return SyncResult(upserted=upserted, deactivated=deactivated, skipped=skipped)
 
 
 def sync_from_excel(file_path: str) -> ExcelSyncResult:
@@ -113,8 +110,12 @@ async def _sync_from_excel(file_path: str) -> ExcelSyncResult:
         for row in rows:
             lookup = await resolve_slack_id_for_batch(client, row.email)
             if lookup.abort_batch:
-                logger.error("Aborting Excel sync because Slack user lookup failed")
-                return ExcelSyncResult(upserted=0, skipped=skipped)
+                logger.error(
+                    "Aborting Excel sync: %s upserted, %s skipped before batch abort",
+                    upserted,
+                    skipped,
+                )
+                return ExcelSyncResult(upserted=upserted, skipped=skipped)
 
             slack_user_id = lookup.slack_user_id
             if slack_user_id is None:
@@ -188,23 +189,6 @@ async def retry_slack_lookup_once(client: AsyncWebClient, email: str) -> SlackLo
         return SlackLookupResult(abort_batch=True)
 
 
-def slack_error_reason(error: SlackApiError) -> str:
-    response = getattr(error, "response", None)
-    if response is not None:
-        try:
-            slack_error = response.get("error")
-        except AttributeError:
-            slack_error = None
-        if slack_error:
-            return str(slack_error)
-
-        data = getattr(response, "data", None)
-        if isinstance(data, dict) and data.get("error"):
-            return str(data["error"])
-
-    return str(error) or error.__class__.__name__
-
-
 def retry_after_seconds(error: SlackApiError) -> int:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None)
@@ -228,15 +212,6 @@ def header_value(headers: object, name: str) -> str | None:
         return str(value) if value is not None else None
 
     return None
-
-
-async def read_sheet_rows(settings: Settings) -> list[BirthdayRow]:
-    if settings.google_sheets_id is None or settings.google_service_account_json is None:
-        logger.error("Skipping Google Sheets sync: Google Sheets settings are not configured")
-        return []
-
-    values = await asyncio.to_thread(_read_sheet_values, settings)
-    return parse_sheet_values(values)
 
 
 def read_excel_rows(file_path: str) -> tuple[list[BirthdayRow], int]:
@@ -263,19 +238,23 @@ def read_excel_rows(file_path: str) -> tuple[list[BirthdayRow], int]:
                 continue
 
             email = _excel_cell_text(_excel_row_value(raw_row, email_index))
-            birthday = _excel_birthday_mm_dd(_excel_row_value(raw_row, birthday_index))
-            if not email or birthday is None:
-                logger.warning("Skipping Excel row %s with missing email or birthday", index)
+            birthday_value = _excel_row_value(raw_row, birthday_index)
+            birthday = _excel_birthday_mm_dd(birthday_value)
+            if not email:
+                logger.warning("Skipping Excel row %s with missing email", index)
                 skipped += 1
                 continue
 
-            month_day = _parse_mm_dd(birthday)
-            if month_day is None:
-                logger.warning("Skipping Excel row %s with invalid birthday: %s", index, birthday)
+            if birthday is None:
+                logger.warning(
+                    "Skipping Excel row %s with invalid birthday: %s",
+                    index,
+                    _excel_cell_text(birthday_value),
+                )
                 skipped += 1
                 continue
 
-            birth_month, birth_day = month_day
+            birth_month, birth_day = _parse_mm_dd(birthday)
             rows.append(BirthdayRow(email=email, birth_month=birth_month, birth_day=birth_day))
 
         return rows, skipped
@@ -283,28 +262,7 @@ def read_excel_rows(file_path: str) -> tuple[list[BirthdayRow], int]:
         workbook.close()
 
 
-def _read_sheet_values(settings: Settings) -> list[list[str]]:
-    if service_account is None or build is None:
-        raise RuntimeError("Google API dependencies are required to sync Google Sheets")
-    if settings.google_sheets_id is None or settings.google_service_account_json is None:
-        logger.error("Skipping Google Sheets sync: Google Sheets settings are not configured")
-        return []
-
-    credentials = service_account.Credentials.from_service_account_file(
-        settings.google_service_account_json,
-        scopes=SCOPES,
-    )
-    service = build("sheets", "v4", credentials=credentials)
-    result = (
-        service.spreadsheets()
-        .values()
-        .get(spreadsheetId=settings.google_sheets_id, range=DEFAULT_RANGE)
-        .execute()
-    )
-    return result.get("values", [])
-
-
-def parse_sheet_values(values: list[list[str]]) -> list[BirthdayRow]:
+def parse_rows(values: list[list[str]]) -> list[BirthdayRow]:
     if not values:
         return []
 
@@ -357,8 +315,12 @@ def _excel_birthday_mm_dd(value: object) -> str | None:
     if isinstance(value, (datetime, date)):
         return f"{value.month:02d}-{value.day:02d}"
 
-    birthday = _excel_cell_text(value)[:5]
-    return birthday if len(birthday) == 5 else None
+    birthday = _parse_birthday_text(_excel_cell_text(value))
+    if birthday is None:
+        return None
+
+    month, day = birthday
+    return f"{month:02d}-{day:02d}"
 
 
 def _parse_mm_dd(value: str) -> tuple[int, int] | None:
@@ -378,13 +340,26 @@ def _parse_birthday(row: dict[str, str]) -> tuple[int, int] | None:
     if not birthday:
         return None
 
-    birthday = birthday.strip()
-    for fmt in ("%Y-%m-%d", "%m-%d", "%m/%d"):
-        try:
-            parsed = datetime.strptime(birthday, fmt)
-        except ValueError:
-            continue
-        return _valid_month_day(str(parsed.month), str(parsed.day))
+    return _parse_birthday_text(birthday)
+
+
+def _parse_birthday_text(value: str) -> tuple[int, int] | None:
+    birthday = value.strip()
+    if not birthday:
+        return None
+
+    parts = birthday.split("-")
+    if len(parts) == 3:
+        if len(parts[0]) == 4:
+            return _valid_month_day(parts[1], parts[2])
+        return _valid_month_day(parts[0], parts[1])
+
+    if len(parts) == 2:
+        return _valid_month_day(parts[0], parts[1])
+
+    parts = birthday.split("/")
+    if len(parts) == 2:
+        return _valid_month_day(parts[0], parts[1])
 
     return None
 

@@ -24,6 +24,7 @@ except ModuleNotFoundError:  # pragma: no cover
 import db
 from birthday_dates import birthday_targets_for
 from config import Settings
+from utils import slack_error_reason
 
 logger = logging.getLogger(__name__)
 
@@ -65,23 +66,6 @@ def message_for_target(today: date, target_date: date) -> str:
 
     weekday_label = "토요일" if target_date.weekday() == 5 else "일요일"
     return WEEKEND_EARLY_MESSAGE.format(weekday_label=weekday_label, slack_user_id="{slack_user_id}")
-
-
-def slack_error_reason(error: SlackApiError) -> str:
-    response = getattr(error, "response", None)
-    if response is not None:
-        try:
-            slack_error = response.get("error")
-        except AttributeError:
-            slack_error = None
-        if slack_error:
-            return str(slack_error)
-
-        data = getattr(response, "data", None)
-        if isinstance(data, dict) and data.get("error"):
-            return str(data["error"])
-
-    return str(error) or error.__class__.__name__
 
 
 async def is_active_slack_member(client: AsyncWebClient, slack_user_id: str) -> bool:
@@ -149,11 +133,19 @@ async def send_today_birthdays(
                 continue
 
             try:
-                await db.record_birthday_post(pool, slack_user_id, birthday_date)
+                recorded = await db.record_birthday_post(pool, slack_user_id, birthday_date)
             except Exception:
                 logger.critical(
                     "공지는 갔지만 기록 실패 — 다음 실행 시 중복 발송 가능",
                     exc_info=True,
+                )
+                continue
+
+            if not recorded:
+                logger.warning(
+                    "공지 기록 실패 또는 이미 기록됨 — DM 스킵: %s %s",
+                    slack_user_id,
+                    birthday_date,
                 )
                 continue
 

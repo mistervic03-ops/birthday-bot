@@ -67,6 +67,16 @@ class FailingAdminLookupSlackClient(FakeSlackClient):
         raise RuntimeError("slack unavailable")
 
 
+class CountingAdminLookupSlackClient(FakeSlackClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.users_info_calls = []
+
+    async def users_info(self, *, user: str) -> dict:
+        self.users_info_calls.append(user)
+        return await super().users_info(user=user)
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -78,6 +88,10 @@ def make_responder():
         responses.append(kwargs)
 
     return responses, respond
+
+
+def processing_error_response() -> dict:
+    return {"text": commands.PROCESSING_ERROR_MESSAGE, "response_type": "ephemeral"}
 
 
 def test_admin_list_and_log_render_success(monkeypatch) -> None:
@@ -211,6 +225,22 @@ def test_admin_check_fails_closed() -> None:
     assert run(commands.is_workspace_admin("UADMIN")) is False
 
 
+def test_admin_user_ids_grants_admin_without_slack_api() -> None:
+    commands._slack_client = FailingAdminLookupSlackClient()
+    settings = SimpleNamespace(admin_user_ids=["UALLOW"])
+
+    assert run(commands.is_workspace_admin("UALLOW", settings)) is True
+
+
+def test_admin_user_ids_miss_falls_back_to_slack_api() -> None:
+    client = CountingAdminLookupSlackClient()
+    commands._slack_client = client
+    settings = SimpleNamespace(admin_user_ids=["UALLOW"])
+
+    assert run(commands.is_workspace_admin("UADMIN", settings)) is True
+    assert client.users_info_calls == ["UADMIN"]
+
+
 def test_status_includes_birthday_registration(monkeypatch) -> None:
     commands._slack_client = FakeSlackClient()
     birthday_rows = {
@@ -251,6 +281,45 @@ def test_status_includes_birthday_registration(monkeypatch) -> None:
     ]
 
 
+def test_opt_commands_return_ephemeral_on_db_error(monkeypatch) -> None:
+    async def set_receive_wishes(pool, slack_user_id, receive_wishes):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(commands.db, "set_receive_wishes", set_receive_wishes)
+
+    responses, respond = make_responder()
+    for text in ("optout", "optin"):
+        run(
+            commands.route_birthday_command(
+                pool=object(),
+                settings=object(),
+                command={"user_id": "UUSER", "text": text},
+                respond=respond,
+            )
+        )
+
+    assert responses == [processing_error_response(), processing_error_response()]
+
+
+def test_status_returns_ephemeral_on_db_error(monkeypatch) -> None:
+    async def get_receive_wishes(pool, slack_user_id):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(commands.db, "get_receive_wishes", get_receive_wishes)
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UUSER", "text": "status"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [processing_error_response()]
+
+
 def test_admin_set_upserts_birthday(monkeypatch) -> None:
     commands._slack_client = FakeSlackClient()
     upsert_calls = []
@@ -286,6 +355,53 @@ def test_admin_set_upserts_birthday(monkeypatch) -> None:
             "response_type": "ephemeral",
         }
     ]
+
+
+def test_admin_list_and_log_return_ephemeral_on_db_error(monkeypatch) -> None:
+    commands._slack_client = FakeSlackClient()
+
+    async def fetch_active_birthdays(pool):
+        raise RuntimeError("database unavailable")
+
+    async def fetch_recent_birthday_posts(pool, limit):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(commands.db, "fetch_active_birthdays", fetch_active_birthdays)
+    monkeypatch.setattr(commands.db, "fetch_recent_birthday_posts", fetch_recent_birthday_posts)
+
+    responses, respond = make_responder()
+    for text in ("admin list", "admin log"):
+        run(
+            commands.route_birthday_command(
+                pool=object(),
+                settings=object(),
+                command={"user_id": "UADMIN", "text": text},
+                respond=respond,
+            )
+        )
+
+    assert responses == [processing_error_response(), processing_error_response()]
+
+
+def test_admin_set_returns_ephemeral_on_db_error(monkeypatch) -> None:
+    commands._slack_client = FakeSlackClient()
+
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(commands.db, "upsert_birthday", upsert_birthday)
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin set <@UUSER> 03-15"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [processing_error_response()]
 
 
 def test_admin_set_accepts_labeled_mention_and_case_insensitive_username(monkeypatch) -> None:

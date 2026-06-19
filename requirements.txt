@@ -1,8 +1,6 @@
 APScheduler==3.10.4
 FastAPI==0.115.6
 asyncpg==0.30.0
-google-api-python-client==2.154.0
-google-auth==2.36.0
 openpyxl==3.1.5
 python-dotenv==1.0.1
 slack-bolt==1.21.2

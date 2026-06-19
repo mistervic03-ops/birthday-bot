@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -12,8 +12,8 @@ class Settings:
     slack_app_token: str
     database_url: str
     birthday_channel_id: str
-    google_sheets_id: str | None
-    google_service_account_json: str | None
+    hr_excel_path: str
+    admin_user_ids: list[str] = field(default_factory=list)
     timezone: str = "Asia/Seoul"
 
 
@@ -25,8 +25,8 @@ def load_settings() -> Settings:
         slack_app_token=_required_env("SLACK_APP_TOKEN"),
         database_url=_required_env("DATABASE_URL"),
         birthday_channel_id=_required_env("BIRTHDAY_CHANNEL_ID"),
-        google_sheets_id=_optional_env("GOOGLE_SHEETS_ID"),
-        google_service_account_json=_optional_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
+        hr_excel_path=_required_env("HR_EXCEL_PATH"),
+        admin_user_ids=_csv_env("ADMIN_USER_IDS"),
     )
 
 
@@ -37,5 +37,8 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _optional_env(name: str) -> str | None:
-    return os.getenv(name) or None
+def _csv_env(name: str) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
