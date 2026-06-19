@@ -24,9 +24,9 @@ HR 정보를 기반으로 매일 오전 9시, 생일인 분의 채널 공지와 
 
 async def ensure_onboarding_message(
     *, pool: asyncpg.Pool, client: AsyncWebClient, settings: Settings
-) -> None:
+) -> bool:
     if await db.get_bot_state(pool, ONBOARDING_STATE_KEY):
-        return
+        return True
 
     try:
         result = await client.chat_postMessage(
@@ -34,13 +34,22 @@ async def ensure_onboarding_message(
             text=ONBOARDING_MESSAGE,
         )
     except SlackApiError:
-        logger.warning("Failed to post onboarding message", exc_info=True)
-        return
+        logger.error("Failed to post onboarding message", exc_info=True)
+        return False
 
-    message_ts = result["ts"]
+    logger.info("온보딩 메시지 발송 완료")
+    message_ts = result.get("ts")
+    if message_ts is None:
+        logger.warning("Onboarding message posted without ts; skipping pin")
+        return False
+
     await db.set_bot_state(pool, ONBOARDING_STATE_KEY, message_ts)
 
     try:
         await client.pins_add(channel=settings.birthday_channel_id, timestamp=message_ts)
     except SlackApiError:
         logger.warning("Failed to pin onboarding message", exc_info=True)
+        return True
+
+    logger.info("핀 고정 완료")
+    return True

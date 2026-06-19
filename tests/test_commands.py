@@ -11,11 +11,34 @@ class FakeSlackClient:
     def __init__(self) -> None:
         self.messages = []
         self.users = {
-            "UADMIN": {"id": "UADMIN", "is_admin": True, "profile": {"real_name": "관리자"}},
-            "UOWNER": {"id": "UOWNER", "is_owner": True, "profile": {"real_name": "오너"}},
-            "UUSER": {"id": "UUSER", "profile": {"real_name": "홍길동"}},
-            "UOTHER": {"id": "UOTHER", "profile": {"real_name": "김영희"}},
-            "UNORMAL": {"id": "UNORMAL", "profile": {"real_name": "일반유저"}},
+            "UADMIN": {
+                "id": "UADMIN",
+                "name": "admin",
+                "is_admin": True,
+                "profile": {"real_name": "관리자"},
+            },
+            "UOWNER": {
+                "id": "UOWNER",
+                "name": "owner",
+                "is_owner": True,
+                "profile": {"real_name": "오너"},
+            },
+            "UUSER": {
+                "id": "UUSER",
+                "name": "hong",
+                "profile": {"real_name": "홍길동", "display_name": "Gildong"},
+            },
+            "UOTHER": {
+                "id": "UOTHER",
+                "name": "other",
+                "real_name": "RealOther",
+                "profile": {"real_name": "김영희", "display_name": "OtherDisplay"},
+            },
+            "UNORMAL": {
+                "id": "UNORMAL",
+                "name": "normal",
+                "profile": {"real_name": "일반유저"},
+            },
         }
 
     async def users_info(self, *, user: str) -> dict:
@@ -23,6 +46,25 @@ class FakeSlackClient:
 
     async def chat_postMessage(self, *, channel: str, text: str) -> None:
         self.messages.append({"channel": channel, "text": text})
+
+    async def users_list(self, **kwargs) -> dict:
+        return {"members": list(self.users.values()), "response_metadata": {"next_cursor": ""}}
+
+
+class FakeSlackApiError(Exception):
+    def __init__(self, error: str) -> None:
+        super().__init__(error)
+        self.response = {"error": error}
+
+
+class FailingPostSlackClient(FakeSlackClient):
+    async def chat_postMessage(self, *, channel: str, text: str) -> None:
+        raise FakeSlackApiError("not_in_channel")
+
+
+class FailingAdminLookupSlackClient(FakeSlackClient):
+    async def users_info(self, *, user: str) -> dict:
+        raise RuntimeError("slack unavailable")
 
 
 def run(coro):
@@ -113,6 +155,31 @@ def test_admin_sync_returns_counts() -> None:
     ]
 
 
+def test_admin_sync_error_returns_ephemeral() -> None:
+    commands._slack_client = FakeSlackClient()
+
+    async def sync_runner(**kwargs):
+        raise RuntimeError("sync failed")
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UOWNER", "text": "admin sync"},
+            respond=respond,
+            sync_runner=sync_runner,
+        )
+    )
+
+    assert responses == [
+        {
+            "text": "동기화 중 오류가 발생했어요. 로그를 확인해주세요.",
+            "response_type": "ephemeral",
+        }
+    ]
+
+
 def test_admin_rejects_non_admin_before_work(monkeypatch) -> None:
     commands._slack_client = FakeSlackClient()
     called = False
@@ -136,6 +203,12 @@ def test_admin_rejects_non_admin_before_work(monkeypatch) -> None:
 
     assert called is False
     assert responses == [{"text": "관리자만 사용할 수 있는 명령어예요.", "response_type": "ephemeral"}]
+
+
+def test_admin_check_fails_closed() -> None:
+    commands._slack_client = FailingAdminLookupSlackClient()
+
+    assert run(commands.is_workspace_admin("UADMIN")) is False
 
 
 def test_status_includes_birthday_registration(monkeypatch) -> None:
@@ -215,6 +288,46 @@ def test_admin_set_upserts_birthday(monkeypatch) -> None:
     ]
 
 
+def test_admin_set_accepts_labeled_mention_and_case_insensitive_username(monkeypatch) -> None:
+    commands._slack_client = FakeSlackClient()
+    upsert_calls = []
+
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
+        upsert_calls.append((slack_user_id, birth_month, birth_day, email))
+
+    monkeypatch.setattr(commands.db, "upsert_birthday", upsert_birthday)
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin set <@UUSER|홍길동> 03-15"},
+            respond=respond,
+        )
+    )
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin set @realother 04-02"},
+            respond=respond,
+        )
+    )
+
+    assert upsert_calls == [("UUSER", 3, 15, None), ("UOTHER", 4, 2, None)]
+    assert responses == [
+        {
+            "text": "<@UUSER> 님의 생일을 03-15로 등록했습니다.",
+            "response_type": "ephemeral",
+        },
+        {
+            "text": "<@UOTHER> 님의 생일을 04-02로 등록했습니다.",
+            "response_type": "ephemeral",
+        },
+    ]
+
+
 def test_admin_reset_onboarding_runs_reset(monkeypatch) -> None:
     commands._slack_client = FakeSlackClient()
     calls = []
@@ -241,6 +354,29 @@ def test_admin_reset_onboarding_runs_reset(monkeypatch) -> None:
             "text": "온보딩 메시지를 초기화하고 재발송했습니다.",
             "response_type": "ephemeral",
         }
+    ]
+
+
+def test_admin_reset_onboarding_failure_returns_ephemeral(monkeypatch) -> None:
+    commands._slack_client = FakeSlackClient()
+
+    async def reset_onboarding(**kwargs):
+        return False
+
+    monkeypatch.setattr(commands, "reset_onboarding", reset_onboarding)
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool="pool",
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin reset-onboarding"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [
+        {"text": "온보딩 메시지 발송에 실패했어요.", "response_type": "ephemeral"}
     ]
 
 
@@ -275,6 +411,25 @@ def test_admin_test_birthday_sends_without_duplicate_check(monkeypatch) -> None:
     assert responses == [{"text": "테스트 발송 완료: <@UUSER>", "response_type": "ephemeral"}]
 
 
+def test_admin_test_birthday_send_failure_returns_reason() -> None:
+    commands._slack_client = FailingPostSlackClient()
+
+    settings = SimpleNamespace(birthday_channel_id="CBIRTHDAY")
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=settings,
+            command={"user_id": "UADMIN", "text": "admin test-birthday <@UUSER>"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [
+        {"text": "발송 실패: not_in_channel — 봇이 채널에 없어요.", "response_type": "ephemeral"}
+    ]
+
+
 def test_admin_test_weekend_sends_saturday_message_without_duplicate_check(monkeypatch) -> None:
     client = FakeSlackClient()
     commands._slack_client = client
@@ -304,6 +459,25 @@ def test_admin_test_weekend_sends_saturday_message_without_duplicate_check(monke
         {"channel": "UUSER", "text": "생일 축하해요 🎂 오늘 하루 즐겁게 보내세요!"},
     ]
     assert responses == [{"text": "주말 테스트 발송 완료: <@UUSER>", "response_type": "ephemeral"}]
+
+
+def test_admin_test_weekend_send_failure_returns_reason() -> None:
+    commands._slack_client = FailingPostSlackClient()
+
+    settings = SimpleNamespace(birthday_channel_id="CBIRTHDAY")
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=settings,
+            command={"user_id": "UADMIN", "text": "admin test-weekend <@UUSER>"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [
+        {"text": "발송 실패: not_in_channel — 봇이 채널에 없어요.", "response_type": "ephemeral"}
+    ]
 
 
 def test_new_admin_test_commands_reject_non_admin(monkeypatch) -> None:

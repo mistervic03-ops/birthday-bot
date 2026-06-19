@@ -67,6 +67,23 @@ def message_for_target(today: date, target_date: date) -> str:
     return WEEKEND_EARLY_MESSAGE.format(weekday_label=weekday_label, slack_user_id="{slack_user_id}")
 
 
+def slack_error_reason(error: SlackApiError) -> str:
+    response = getattr(error, "response", None)
+    if response is not None:
+        try:
+            slack_error = response.get("error")
+        except AttributeError:
+            slack_error = None
+        if slack_error:
+            return str(slack_error)
+
+        data = getattr(response, "data", None)
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])
+
+    return str(error) or error.__class__.__name__
+
+
 async def is_active_slack_member(client: AsyncWebClient, slack_user_id: str) -> bool:
     try:
         result = await client.users_info(user=slack_user_id)
@@ -90,9 +107,13 @@ async def send_today_birthdays(
     targets_by_birthday = {
         (target.birth_month, target.birth_day): target for target in send_targets
     }
-    rows = await db.fetch_birthdays_for_targets(
-        pool, [(target.birth_month, target.birth_day) for target in send_targets]
-    )
+    try:
+        rows = await db.fetch_birthdays_for_targets(
+            pool, [(target.birth_month, target.birth_day) for target in send_targets]
+        )
+    except Exception:
+        logger.error("Failed to fetch birthday send targets", exc_info=True)
+        return
 
     for row in rows:
         slack_user_id = row["slack_user_id"]
@@ -119,11 +140,23 @@ async def send_today_birthdays(
                     channel=settings.birthday_channel_id,
                     text=target.message.format(slack_user_id=slack_user_id),
                 )
-            except SlackApiError:
-                logger.exception("Failed to post birthday announcement for %s", slack_user_id)
+            except SlackApiError as error:
+                logger.exception(
+                    "Failed to post birthday announcement for %s: %s",
+                    slack_user_id,
+                    slack_error_reason(error),
+                )
                 continue
 
-            await db.record_birthday_post(pool, slack_user_id, birthday_date)
+            try:
+                await db.record_birthday_post(pool, slack_user_id, birthday_date)
+            except Exception:
+                logger.critical(
+                    "공지는 갔지만 기록 실패 — 다음 실행 시 중복 발송 가능",
+                    exc_info=True,
+                )
+                continue
+
             await send_birthday_dm(client, slack_user_id)
 
 

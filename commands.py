@@ -17,7 +17,17 @@ SyncRunner = Callable[..., Awaitable[Any]]
 
 
 async def is_workspace_admin(user_id: str) -> bool:
-    return True  # TODO: PoC 확인 후 원복 필요
+    if _slack_client is None:
+        return False
+
+    try:
+        result = await _slack_client.users_info(user=user_id)
+    except Exception:
+        logger.warning("Failed to check Slack admin status for %s", user_id, exc_info=True)
+        return False
+
+    user = result.get("user") or {}
+    return bool(user.get("is_admin") or user.get("is_owner"))
 
 
 def register_commands(
@@ -152,7 +162,16 @@ async def handle_admin_command(
 
             runner = sync_hr_sheet
 
-        result = await runner(pool=pool, client=_slack_client, settings=settings)
+        try:
+            result = await runner(pool=pool, client=_slack_client, settings=settings)
+        except Exception:
+            logger.exception("Failed to sync HR sheet from admin command")
+            await respond(
+                text="동기화 중 오류가 발생했어요. 로그를 확인해주세요.",
+                response_type="ephemeral",
+            )
+            return
+
         await respond(
             text=f"HR 시트 동기화 완료: {result.upserted}명 upsert, {result.deactivated}명 비활성화",
             response_type="ephemeral",
@@ -170,7 +189,7 @@ async def handle_admin_command(
         target_user_id = await resolve_slack_user_id(raw_parts[2])
         birthday = parse_month_day(raw_parts[3])
         if target_user_id is None:
-            await respond(text="유저를 찾을 수 없어요.", response_type="ephemeral")
+            await respond(text="해당 유저를 찾을 수 없어요.", response_type="ephemeral")
             return
 
         if birthday is None:
@@ -199,7 +218,16 @@ async def handle_admin_command(
             await respond(text="온보딩 설정을 찾을 수 없어요.", response_type="ephemeral")
             return
 
-        await reset_onboarding(pool=pool, client=_slack_client, settings=settings)
+        try:
+            reset_success = await reset_onboarding(pool=pool, client=_slack_client, settings=settings)
+        except Exception:
+            logger.exception("Failed to reset onboarding message")
+            reset_success = False
+
+        if reset_success is False:
+            await respond(text="온보딩 메시지 발송에 실패했어요.", response_type="ephemeral")
+            return
+
         await respond(
             text="온보딩 메시지를 초기화하고 재발송했습니다.",
             response_type="ephemeral",
@@ -221,10 +249,15 @@ async def handle_admin_command(
         logger.debug(f"test-birthday raw text: {command['text']!r}")
         target_user_id = await resolve_slack_user_id(raw_parts[2])
         if target_user_id is None:
-            await respond(text="유저를 찾을 수 없어요.", response_type="ephemeral")
+            await respond(text="해당 유저를 찾을 수 없어요.", response_type="ephemeral")
             return
 
-        await send_test_birthday(settings=settings, target_user_id=target_user_id)
+        try:
+            await send_test_birthday(settings=settings, target_user_id=target_user_id)
+        except SlackSendError as error:
+            await respond(text=str(error), response_type="ephemeral")
+            return
+
         await respond(
             text=f"테스트 발송 완료: <@{target_user_id}>",
             response_type="ephemeral",
@@ -245,10 +278,15 @@ async def handle_admin_command(
 
         target_user_id = await resolve_slack_user_id(raw_parts[2])
         if target_user_id is None:
-            await respond(text="유저를 찾을 수 없어요.", response_type="ephemeral")
+            await respond(text="해당 유저를 찾을 수 없어요.", response_type="ephemeral")
             return
 
-        await send_test_weekend(settings=settings, target_user_id=target_user_id)
+        try:
+            await send_test_weekend(settings=settings, target_user_id=target_user_id)
+        except SlackSendError as error:
+            await respond(text=str(error), response_type="ephemeral")
+            return
+
         await respond(
             text=f"주말 테스트 발송 완료: <@{target_user_id}>",
             response_type="ephemeral",
@@ -296,7 +334,7 @@ def format_birthday_status(row: Any | None) -> str:
 
 
 def parse_slack_mention(value: str) -> str | None:
-    match = re.fullmatch(r"<@([A-Z0-9]+)>", value)
+    match = re.fullmatch(r"<@(U[A-Z0-9]+)(?:\|[^>]+)?>", value)
     return match.group(1) if match else None
 
 
@@ -308,6 +346,7 @@ async def resolve_slack_user_id(value: str) -> str | None:
     username = parse_slack_username(value)
     if username is None or _slack_client is None:
         return None
+    username = username.lower()
 
     cursor = None
     while True:
@@ -319,7 +358,13 @@ async def resolve_slack_user_id(value: str) -> str | None:
 
         for user in result.get("members") or []:
             profile = user.get("profile") or {}
-            if username in {user.get("name"), profile.get("display_name")}:
+            candidate_names = {
+                user.get("name"),
+                profile.get("display_name"),
+                profile.get("real_name"),
+                user.get("real_name"),
+            }
+            if username in {name.lower() for name in candidate_names if name}:
                 return user.get("id")
 
         cursor = (result.get("response_metadata") or {}).get("next_cursor")
@@ -345,21 +390,55 @@ def parse_month_day(value: str) -> tuple[int, int] | None:
     return None
 
 
-async def reset_onboarding(*, pool: Any, client: Any, settings: Any) -> None:
+async def reset_onboarding(*, pool: Any, client: Any, settings: Any) -> bool:
     from onboarding import ONBOARDING_STATE_KEY, ensure_onboarding_message
 
     await db.delete_bot_state(pool, ONBOARDING_STATE_KEY)
     await ensure_onboarding_message(pool=pool, client=client, settings=settings)
+    return await db.get_bot_state(pool, ONBOARDING_STATE_KEY) is not None
+
+
+class SlackSendError(Exception):
+    pass
+
+
+def format_slack_send_error(error: Exception) -> str:
+    reason = slack_error_reason(error)
+    detail = {"not_in_channel": "봇이 채널에 없어요."}.get(reason)
+    if detail:
+        return f"발송 실패: {reason} — {detail}"
+    return f"발송 실패: {reason}"
+
+
+def slack_error_reason(error: Exception) -> str:
+    response = getattr(error, "response", None)
+    if response is not None:
+        try:
+            slack_error = response.get("error")
+        except AttributeError:
+            slack_error = None
+        if slack_error:
+            return str(slack_error)
+
+        data = getattr(response, "data", None)
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])
+
+    return str(error) or error.__class__.__name__
 
 
 async def send_test_birthday(*, settings: Any, target_user_id: str) -> None:
     from birthday import CHANNEL_MESSAGE, DM_MESSAGE
 
-    await _slack_client.chat_postMessage(
-        channel=settings.birthday_channel_id,
-        text=CHANNEL_MESSAGE.format(slack_user_id=target_user_id),
-    )
-    await _slack_client.chat_postMessage(channel=target_user_id, text=DM_MESSAGE)
+    try:
+        await _slack_client.chat_postMessage(
+            channel=settings.birthday_channel_id,
+            text=CHANNEL_MESSAGE.format(slack_user_id=target_user_id),
+        )
+        await _slack_client.chat_postMessage(channel=target_user_id, text=DM_MESSAGE)
+    except Exception as error:
+        logger.warning("Failed to send test birthday message", exc_info=True)
+        raise SlackSendError(format_slack_send_error(error)) from error
 
 
 async def send_test_weekend(*, settings: Any, target_user_id: str) -> None:
@@ -369,5 +448,9 @@ async def send_test_weekend(*, settings: Any, target_user_id: str) -> None:
         weekday_label="토요일",
         slack_user_id=target_user_id,
     )
-    await _slack_client.chat_postMessage(channel=settings.birthday_channel_id, text=text)
-    await _slack_client.chat_postMessage(channel=target_user_id, text=DM_MESSAGE)
+    try:
+        await _slack_client.chat_postMessage(channel=settings.birthday_channel_id, text=text)
+        await _slack_client.chat_postMessage(channel=target_user_id, text=DM_MESSAGE)
+    except Exception as error:
+        logger.warning("Failed to send test weekend message", exc_info=True)
+        raise SlackSendError(format_slack_send_error(error)) from error

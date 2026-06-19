@@ -55,6 +55,12 @@ class ExcelSyncResult:
     skipped: int
 
 
+@dataclass(frozen=True)
+class SlackLookupResult:
+    slack_user_id: str | None = None
+    abort_batch: bool = False
+
+
 async def sync_hr_sheet(
     *, pool: asyncpg.Pool, client: AsyncWebClient, settings: Settings
 ) -> SyncResult:
@@ -63,7 +69,12 @@ async def sync_hr_sheet(
     upserted = 0
 
     for row in rows:
-        slack_user_id = await resolve_slack_id(client, row.email)
+        lookup = await resolve_slack_id_for_batch(client, row.email)
+        if lookup.abort_batch:
+            logger.error("Aborting HR sheet sync because Slack user lookup failed")
+            return SyncResult(upserted=0, deactivated=0)
+
+        slack_user_id = lookup.slack_user_id
         if slack_user_id is None:
             logger.warning("Skipping HR row with unmatched email: %s", row.email)
             continue
@@ -100,7 +111,12 @@ async def _sync_from_excel(file_path: str) -> ExcelSyncResult:
     try:
         upserted = 0
         for row in rows:
-            slack_user_id = await resolve_slack_id(client, row.email)
+            lookup = await resolve_slack_id_for_batch(client, row.email)
+            if lookup.abort_batch:
+                logger.error("Aborting Excel sync because Slack user lookup failed")
+                return ExcelSyncResult(upserted=0, skipped=skipped)
+
+            slack_user_id = lookup.slack_user_id
             if slack_user_id is None:
                 logger.warning("Skipping Excel row with unmatched email: %s", row.email)
                 skipped += 1
@@ -121,13 +137,97 @@ async def _sync_from_excel(file_path: str) -> ExcelSyncResult:
 
 
 async def resolve_slack_id(client: AsyncWebClient, email: str) -> str | None:
-    try:
-        result = await client.users_lookupByEmail(email=email)
-    except SlackApiError:
-        return None
+    return (await resolve_slack_id_for_batch(client, email)).slack_user_id
 
+
+async def resolve_slack_id_for_batch(client: AsyncWebClient, email: str) -> SlackLookupResult:
+    try:
+        return SlackLookupResult(slack_user_id=await lookup_slack_user_by_email(client, email))
+    except SlackApiError as error:
+        return await handle_slack_lookup_error(client, email, error)
+
+
+async def lookup_slack_user_by_email(client: AsyncWebClient, email: str) -> str | None:
+    result = await client.users_lookupByEmail(email=email)
     user = result.get("user") or {}
     return user.get("id")
+
+
+async def handle_slack_lookup_error(
+    client: AsyncWebClient, email: str, error: SlackApiError
+) -> SlackLookupResult:
+    reason = slack_error_reason(error)
+    if reason == "users_not_found":
+        logger.warning("Skipping Slack lookup for %s: users_not_found", email)
+        return SlackLookupResult()
+
+    if reason == "ratelimited":
+        retry_after = retry_after_seconds(error)
+        logger.error(
+            "Slack lookup for %s was rate limited; retrying after %s seconds",
+            email,
+            retry_after,
+        )
+        await asyncio.sleep(retry_after)
+        return await retry_slack_lookup_once(client, email)
+
+    logger.error("Slack lookup for %s failed: %s", email, reason, exc_info=True)
+    return SlackLookupResult(abort_batch=True)
+
+
+async def retry_slack_lookup_once(client: AsyncWebClient, email: str) -> SlackLookupResult:
+    try:
+        return SlackLookupResult(slack_user_id=await lookup_slack_user_by_email(client, email))
+    except SlackApiError as error:
+        reason = slack_error_reason(error)
+        if reason == "users_not_found":
+            logger.warning("Skipping Slack lookup for %s after retry: users_not_found", email)
+            return SlackLookupResult()
+
+        logger.error("Slack lookup retry for %s failed: %s", email, reason, exc_info=True)
+        return SlackLookupResult(abort_batch=True)
+
+
+def slack_error_reason(error: SlackApiError) -> str:
+    response = getattr(error, "response", None)
+    if response is not None:
+        try:
+            slack_error = response.get("error")
+        except AttributeError:
+            slack_error = None
+        if slack_error:
+            return str(slack_error)
+
+        data = getattr(response, "data", None)
+        if isinstance(data, dict) and data.get("error"):
+            return str(data["error"])
+
+    return str(error) or error.__class__.__name__
+
+
+def retry_after_seconds(error: SlackApiError) -> int:
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None and isinstance(response, dict):
+        headers = response.get("headers")
+
+    if headers is not None:
+        retry_after = header_value(headers, "Retry-After")
+        if retry_after is not None:
+            try:
+                return max(0, int(retry_after))
+            except ValueError:
+                pass
+
+    return 1
+
+
+def header_value(headers: object, name: str) -> str | None:
+    if hasattr(headers, "get"):
+        value = headers.get(name) or headers.get(name.lower())
+        return str(value) if value is not None else None
+
+    return None
 
 
 async def read_sheet_rows(settings: Settings) -> list[BirthdayRow]:
