@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS user_preferences (
 CREATE TABLE IF NOT EXISTS birthday_posts (
     slack_user_id   VARCHAR(20) NOT NULL,
     birthday_date   DATE NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'sent' CHECK (status IN ('sending', 'sent', 'failed')),
+    channel_ts      TEXT,
+    error           TEXT,
     posted_at       TIMESTAMPTZ DEFAULT NOW(),
+    sent_at         TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (slack_user_id, birthday_date)
 );
 
@@ -38,6 +43,33 @@ CREATE TABLE IF NOT EXISTS bot_state (
     value           TEXT NOT NULL,
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
+"""
+
+MIGRATE_SCHEMA_SQL = """
+ALTER TABLE birthday_posts
+    ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'sent',
+    ADD COLUMN IF NOT EXISTS channel_ts TEXT,
+    ADD COLUMN IF NOT EXISTS error TEXT,
+    ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+UPDATE birthday_posts
+SET sent_at = COALESCE(sent_at, posted_at),
+    updated_at = COALESCE(updated_at, posted_at, NOW())
+WHERE status = 'sent';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'birthday_posts_status_check'
+    ) THEN
+        ALTER TABLE birthday_posts
+            ADD CONSTRAINT birthday_posts_status_check
+            CHECK (status IN ('sending', 'sent', 'failed'));
+    END IF;
+END $$;
 """
 
 
@@ -52,6 +84,7 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
 async def init_db(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         await conn.execute(CREATE_SCHEMA_SQL)
+        await conn.execute(MIGRATE_SCHEMA_SQL)
 
 
 async def upsert_birthday(
@@ -113,10 +146,16 @@ async def fetch_active_birthdays(pool: asyncpg.Pool) -> list[asyncpg.Record]:
 async def fetch_recent_birthday_posts(pool: asyncpg.Pool, limit: int = 30) -> list[asyncpg.Record]:
     return await pool.fetch(
         """
-        SELECT p.slack_user_id, p.birthday_date, p.posted_at, b.email
+        SELECT
+            p.slack_user_id,
+            p.birthday_date,
+            COALESCE(p.sent_at, p.posted_at) AS posted_at,
+            p.status,
+            p.error,
+            b.email
         FROM birthday_posts p
         LEFT JOIN birthdays b ON b.slack_user_id = p.slack_user_id
-        ORDER BY p.posted_at DESC
+        ORDER BY COALESCE(p.sent_at, p.posted_at) DESC
         LIMIT $1
         """,
         limit,
@@ -184,16 +223,66 @@ async def has_birthday_post(pool: asyncpg.Pool, slack_user_id: str, birthday_dat
 async def record_birthday_post(
     pool: asyncpg.Pool, slack_user_id: str, birthday_date: date
 ) -> bool:
+    return await reserve_birthday_post(pool, slack_user_id, birthday_date)
+
+
+async def reserve_birthday_post(
+    pool: asyncpg.Pool, slack_user_id: str, birthday_date: date
+) -> bool:
     status = await pool.execute(
         """
-        INSERT INTO birthday_posts (slack_user_id, birthday_date)
-        VALUES ($1, $2)
+        INSERT INTO birthday_posts (slack_user_id, birthday_date, status, error, posted_at, updated_at)
+        VALUES ($1, $2, 'sending', NULL, NOW(), NOW())
         ON CONFLICT DO NOTHING
         """,
         slack_user_id,
         birthday_date,
     )
     return status == "INSERT 0 1"
+
+
+async def mark_birthday_post_sent(
+    pool: asyncpg.Pool,
+    slack_user_id: str,
+    birthday_date: date,
+    *,
+    channel_ts: str | None,
+) -> None:
+    await pool.execute(
+        """
+        UPDATE birthday_posts
+        SET status = 'sent',
+            channel_ts = $3,
+            error = NULL,
+            sent_at = NOW(),
+            updated_at = NOW()
+        WHERE slack_user_id = $1 AND birthday_date = $2
+        """,
+        slack_user_id,
+        birthday_date,
+        channel_ts,
+    )
+
+
+async def mark_birthday_post_failed(
+    pool: asyncpg.Pool,
+    slack_user_id: str,
+    birthday_date: date,
+    *,
+    error: str,
+) -> None:
+    await pool.execute(
+        """
+        UPDATE birthday_posts
+        SET status = 'failed',
+            error = $3,
+            updated_at = NOW()
+        WHERE slack_user_id = $1 AND birthday_date = $2
+        """,
+        slack_user_id,
+        birthday_date,
+        error[:500],
+    )
 
 
 @asynccontextmanager

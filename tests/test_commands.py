@@ -67,6 +67,13 @@ class FailingAdminLookupSlackClient(FakeSlackClient):
         raise RuntimeError("slack unavailable")
 
 
+class InactiveSlackClient(FakeSlackClient):
+    async def users_info(self, *, user: str) -> dict:
+        result = await super().users_info(user=user)
+        result["user"]["deleted"] = True
+        return result
+
+
 class CountingAdminLookupSlackClient(FakeSlackClient):
     def __init__(self) -> None:
         super().__init__()
@@ -92,6 +99,26 @@ def make_responder():
 
 def processing_error_response() -> dict:
     return {"text": commands.PROCESSING_ERROR_MESSAGE, "response_type": "ephemeral"}
+
+
+def test_help_is_returned_for_empty_help_unknown_and_admin_help() -> None:
+    responses, respond = make_responder()
+    for text in ("", "help", "unknown", "admin help"):
+        run(
+            commands.route_birthday_command(
+                pool=object(),
+                settings=object(),
+                command={"user_id": "UNORMAL", "text": text},
+                respond=respond,
+            )
+        )
+
+    assert responses == [
+        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
+    ]
 
 
 def test_admin_list_and_log_render_success(monkeypatch) -> None:
@@ -556,6 +583,87 @@ def test_admin_test_birthday_send_failure_returns_reason() -> None:
 
     assert responses == [
         {"text": "발송 실패: not_in_channel — 봇이 채널에 없어요.", "response_type": "ephemeral"}
+    ]
+
+
+def test_admin_preview_lists_targets_without_sending(monkeypatch) -> None:
+    client = FakeSlackClient()
+    commands._slack_client = client
+
+    async def fetch_birthdays_for_targets(pool, targets):
+        assert targets == [(6, 19), (6, 20), (6, 21)]
+        return [
+            {
+                "slack_user_id": "UUSER",
+                "birth_month": 6,
+                "birth_day": 19,
+                "email": "user@example.com",
+                "receive_wishes": True,
+            }
+        ]
+
+    async def has_birthday_post(pool, slack_user_id, birthday_date):
+        return False
+
+    monkeypatch.setattr(commands.db, "fetch_birthdays_for_targets", fetch_birthdays_for_targets)
+    monkeypatch.setattr(commands.db, "has_birthday_post", has_birthday_post)
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin preview 2026-06-19"},
+            respond=respond,
+        )
+    )
+
+    assert client.messages == []
+    assert responses == [
+        {
+            "text": "2026-06-19 preview\n- 2026-06-19 홍길동 (<@UUSER>): 발송 예정",
+            "response_type": "ephemeral",
+        }
+    ]
+
+
+def test_admin_preview_marks_inactive_slack_users_without_sending(monkeypatch) -> None:
+    client = InactiveSlackClient()
+    commands._slack_client = client
+
+    async def fetch_birthdays_for_targets(pool, targets):
+        return [
+            {
+                "slack_user_id": "UUSER",
+                "birth_month": 6,
+                "birth_day": 19,
+                "email": "user@example.com",
+                "receive_wishes": True,
+            }
+        ]
+
+    async def has_birthday_post(pool, slack_user_id, birthday_date):
+        return False
+
+    monkeypatch.setattr(commands.db, "fetch_birthdays_for_targets", fetch_birthdays_for_targets)
+    monkeypatch.setattr(commands.db, "has_birthday_post", has_birthday_post)
+
+    responses, respond = make_responder()
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin preview 2026-06-19"},
+            respond=respond,
+        )
+    )
+
+    assert client.messages == []
+    assert responses == [
+        {
+            "text": "2026-06-19 preview\n- 2026-06-19 홍길동 (<@UUSER>): 스킵: 비활성 Slack 유저",
+            "response_type": "ephemeral",
+        }
     ]
 
 

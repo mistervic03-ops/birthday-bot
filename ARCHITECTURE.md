@@ -23,6 +23,7 @@ Required settings in the current code:
 - `DATABASE_URL`
 - `BIRTHDAY_CHANNEL_ID`
 - `HR_EXCEL_PATH`
+- `TIMEZONE` (optional, defaults to `Asia/Seoul`)
 - `ADMIN_USER_IDS` (optional, comma-separated Slack user IDs)
 
 `config.py` parses `ADMIN_USER_IDS` into `settings.admin_user_ids`. Missing or empty values become an empty list.
@@ -127,8 +128,9 @@ The sender:
 - Selects today's birthdays.
 - On Fridays, includes Saturday and Sunday targets.
 - Uses advisory locks and `birthday_posts` to avoid duplicate sends.
-- Posts the channel announcement before recording `birthday_posts`.
-- Logs critically if the announcement succeeds but recording fails, because the next run may send a duplicate.
+- Reserves the channel announcement in `birthday_posts` before posting to Slack.
+- Marks the reservation `sent` after Slack returns success.
+- Marks the reservation `failed` if Slack returns an API error; automatic retries are blocked until an operator clears or updates the row.
 - Sends the birthday DM after the channel post is recorded.
 
 ## Database

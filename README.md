@@ -10,7 +10,7 @@ Slack Socket Mode bot that syncs birthdays from an HR Excel file and sends daily
 - Sends birthday channel announcements at 09:00 KST.
 - Sends a birthday DM to the birthday person.
 - On Fridays, sends early announcements for Saturday and Sunday birthdays.
-- Prevents duplicate birthday announcements with a Postgres send log and advisory lock.
+- Prevents duplicate birthday announcements with a Postgres send reservation, send log, and advisory lock.
 - Lets users opt out of channel announcements.
 - Provides admin commands for manual sync, inspection, testing, and overrides.
 - Posts and pins a one-time onboarding message in the birthday channel.
@@ -38,6 +38,7 @@ Slack Socket Mode bot that syncs birthdays from an HR Excel file and sends daily
    | `SLACK_APP_TOKEN` | Yes | Slack app-level token for Socket Mode. |
    | `DATABASE_URL` | Yes | Postgres connection URL. |
    | `BIRTHDAY_CHANNEL_ID` | Yes | Channel ID where birthday announcements are posted. |
+   | `TIMEZONE` | No | Runtime timezone for scheduler and "today" calculations. Defaults to `Asia/Seoul`. |
    | `HR_EXCEL_PATH` | Yes | Path to the HR Excel file. Absolute paths and project-relative paths are both supported by the runtime environment. |
    | `ADMIN_USER_IDS` | No | Comma-separated Slack user IDs that should receive admin command access in addition to workspace Admins/Owners. |
 
@@ -70,6 +71,24 @@ Scheduled jobs:
 - `08:50` KST: sync HR birthday data from the configured Excel file.
 - `09:00` KST: send birthday announcements and DMs.
 
+Both jobs use the configured `TIMEZONE`, `coalesce=True`, and `max_instances=1`. If the server clock is UTC, the scheduler still evaluates the cron times in `Asia/Seoul` unless `TIMEZONE` is changed.
+
+## Slack App Setup
+
+Required bot token scopes:
+
+- `chat:write` - post channel announcements and DMs.
+- `commands` - receive the `/birthday` slash command.
+- `users:read` - check active/admin users and resolve display names.
+- `users:read.email` - resolve HR emails with `users.lookupByEmail`.
+- `pins:write` - pin the onboarding message.
+
+Required app-level token scope:
+
+- `connections:write` - run Socket Mode.
+
+Use a channel ID such as `C012345ABC` for `BIRTHDAY_CHANNEL_ID`, not a channel name. Invite the bot to the channel before starting the app.
+
 ## HR Excel Columns
 
 The configured Excel file should contain employee birthday rows. If a supported header row is present, the parser detects the birthday and email columns.
@@ -99,10 +118,11 @@ User commands:
 Admin commands:
 
 - `/birthday admin list` - list active registered birthdays.
-- `/birthday admin log` - show recent birthday announcement logs.
+- `/birthday admin log` - show recent birthday announcement logs, including failed/reserved sends.
 - `/birthday admin sync` - manually sync the HR Excel file.
 - `/birthday admin set @user MM-DD` - manually set a user's birthday.
 - `/birthday admin reset-onboarding` - resend and pin the onboarding message.
+- `/birthday admin preview YYYY-MM-DD` - preview who would be sent for a date without posting to Slack or writing send logs.
 - `/birthday admin test-birthday @user` - send a test birthday announcement and DM.
 - `/birthday admin test-weekend @user` - send a test weekend-style announcement and DM.
 
@@ -124,8 +144,41 @@ The app creates these tables automatically on startup:
 
 - `birthdays` - active birthday records keyed by Slack user ID.
 - `user_preferences` - per-user birthday announcement preferences.
-- `birthday_posts` - send log used to prevent duplicates.
+- `birthday_posts` - send reservation/log used to prevent duplicates. `status` is `sending`, `sent`, or `failed`.
 - `bot_state` - small bot state values such as the onboarding message timestamp.
+
+## Duplicate Sending and Recovery
+
+The scheduled sender reserves `(slack_user_id, birthday_date)` in `birthday_posts` before posting to Slack. This blocks duplicate sends across process restarts, overlapping scheduler runs, and ambiguous Slack client failures.
+
+Status flow:
+
+- `sending`: DB reservation exists and blocks duplicates. This is normally brief, but can remain if Slack accepted the message and the later DB success update failed.
+- `sent`: Slack channel post succeeded and the DB success update completed.
+- `failed`: Slack posting raised an error after the reservation was created.
+
+Any existing row for the same `(slack_user_id, birthday_date)` blocks automatic re-send, regardless of status. This is intentional: when Slack may have accepted a message but the app saw an error, blocking first is safer than duplicate announcements.
+
+Check reserved, sent, and failed rows with:
+
+```bash
+/birthday admin log
+```
+
+Recovery flow for `failed` or stale `sending` rows:
+
+1. Confirm in Slack whether the announcement actually appeared.
+2. If it did appear, leave the row as-is or update it to `sent` manually.
+3. If it did not appear and you want the next run/manual call to send it, delete that one row from `birthday_posts` for the affected `slack_user_id` and `birthday_date`, then rerun the job or handle it manually.
+
+Example SQL:
+
+```sql
+DELETE FROM birthday_posts
+WHERE slack_user_id = 'U012345ABC'
+  AND birthday_date = DATE '2026-06-19'
+  AND status IN ('failed', 'sending');
+```
 
 ## Tests
 
@@ -137,8 +190,22 @@ python3 -m pytest -q
 
 Current tests cover birthday date logic, Friday weekend announcements, command routing, admin permissions, manual admin actions, test-send commands, and Excel sync parsing.
 
+Useful manual checks before deployment:
+
+```bash
+# Health check
+curl http://127.0.0.1:8000/health
+
+# Preview a date without posting to Slack
+/birthday admin preview 2026-06-19
+
+# Send an explicit test message to one Slack user
+/birthday admin test-birthday @user
+```
+
 ## Notes
 
 - The project currently uses app-startup schema creation, not a migration tool.
 - Integration tests for real Slack and Postgres are not included yet.
 - Deployment files such as Dockerfile, docker-compose, and CI workflows are not included yet.
+- For Spark deployment, run this as a long-lived FastAPI process, for example with `uvicorn main:app --host 0.0.0.0 --port 8000` under Spark's process manager or a service supervisor. Set all environment variables in Spark rather than relying on a local `.env` file.

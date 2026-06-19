@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -27,6 +28,7 @@ def load_settings() -> Settings:
         birthday_channel_id=_required_env("BIRTHDAY_CHANNEL_ID"),
         hr_excel_path=_required_env("HR_EXCEL_PATH"),
         admin_user_ids=_csv_env("ADMIN_USER_IDS"),
+        timezone=_timezone_env("TIMEZONE", "Asia/Seoul"),
     )
 
 
@@ -42,3 +44,12 @@ def _csv_env(name: str) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _timezone_env(name: str, default: str) -> str:
+    value = os.getenv(name) or default
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as error:
+        raise RuntimeError(f"Invalid timezone in {name}: {value}") from error
+    return value

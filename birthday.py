@@ -131,13 +131,30 @@ async def send_today_birthdays(
                 logger.info("Skipping inactive Slack user %s", slack_user_id)
                 continue
 
+            reserved = await db.reserve_birthday_post(pool, slack_user_id, birthday_date)
+            if not reserved:
+                logger.info("Skipping already reserved birthday send for %s", slack_user_id)
+                continue
+
             try:
-                await client.chat_postMessage(
+                result = await client.chat_postMessage(
                     channel=settings.birthday_channel_id,
                     text=target.message.format(slack_user_id=slack_user_id),
                     username="빅스데이",
                 )
-            except SlackApiError as error:
+            except Exception as error:
+                try:
+                    await db.mark_birthday_post_failed(
+                        pool,
+                        slack_user_id,
+                        birthday_date,
+                        error=slack_error_reason(error),
+                    )
+                except Exception:
+                    logger.critical(
+                        "Failed to mark birthday announcement failure",
+                        exc_info=True,
+                    )
                 logger.exception(
                     "Failed to post birthday announcement for %s: %s",
                     slack_user_id,
@@ -146,19 +163,16 @@ async def send_today_birthdays(
                 continue
 
             try:
-                recorded = await db.record_birthday_post(pool, slack_user_id, birthday_date)
-            except Exception:
-                logger.critical(
-                    "공지는 갔지만 기록 실패 — 다음 실행 시 중복 발송 가능",
-                    exc_info=True,
-                )
-                continue
-
-            if not recorded:
-                logger.warning(
-                    "공지 기록 실패 또는 이미 기록됨 — DM 스킵: %s %s",
+                await db.mark_birthday_post_sent(
+                    pool,
                     slack_user_id,
                     birthday_date,
+                    channel_ts=result.get("ts") if result is not None else None,
+                )
+            except Exception:
+                logger.critical(
+                    "공지는 갔지만 성공 상태 업데이트 실패 — birthday_posts 예약으로 자동 중복 발송은 차단됨",
+                    exc_info=True,
                 )
                 continue
 

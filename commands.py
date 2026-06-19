@@ -4,6 +4,7 @@ import calendar
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 
 import db
@@ -14,6 +15,47 @@ logger = logging.getLogger(__name__)
 _slack_client: Any | None = None
 PROCESSING_ERROR_MESSAGE = "앗, 처리 중에 문제가 생겼어요. 잠시 후 다시 시도해주세요 🙏"
 USER_NOT_FOUND_MESSAGE = "해당 유저를 찾지 못했어요. 멘션으로 다시 시도해주세요!"
+BIRTHDAY_HELP_MESSAGE = """*🎂 Birthday Bot*
+
+*일반 사용자*
+• `/birthday optout`
+생일 공지 수신 끄기
+
+• `/birthday optin`
+생일 공지 다시 받기
+
+• `/birthday status`
+내 생일 등록 상태와 수신 설정 확인
+
+*관리자*
+• `/birthday admin list`
+활성 생일자 목록 확인
+
+• `/birthday admin sync`
+HR 명부 동기화
+
+• `/birthday admin preview YYYY-MM-DD`
+특정 날짜 생일 대상 미리보기
+
+• `/birthday admin test-birthday @user`
+생일 공지 테스트 발송
+
+• `/birthday admin test-weekend @user`
+주말 생일 공지 테스트 발송
+
+• `/birthday admin log`
+최근 발송 로그 확인
+
+• `/birthday admin set @user MM-DD`
+생일 수동 등록
+
+• `/birthday admin reset-onboarding`
+온보딩 메시지 재발송
+
+*운영 정보*
+• 매일 오전 9시 자동 실행
+• 중복 발송 방지 적용
+• 비활성 Slack 계정 자동 제외"""
 
 
 SyncRunner = Callable[..., Awaitable[Any]]
@@ -74,6 +116,10 @@ async def route_birthday_command(
     text = raw_text.lower()
     parts = text.split()
 
+    if text in {"", "help", "admin help"}:
+        await respond_birthday_help(respond)
+        return
+
     if parts and parts[0] == "admin":
         await handle_admin_command(
             pool=pool,
@@ -127,10 +173,7 @@ async def route_birthday_command(
             await respond_processing_error(respond)
         return
 
-    await respond(
-        text="사용 가능한 명령어: `/birthday optout`, `/birthday optin`, `/birthday status`",
-        response_type="ephemeral",
-    )
+    await respond_birthday_help(respond)
 
 
 async def handle_admin_command(
@@ -173,7 +216,9 @@ async def handle_admin_command(
             rows = await db.fetch_recent_birthday_posts(pool, limit=30)
             lines = [
                 f"{row['birthday_date']:%Y-%m-%d} "
-                f"{await slack_display_name(row['slack_user_id'], record_get(row, 'email'))} — 발송완료"
+                f"{await slack_display_name(row['slack_user_id'], record_get(row, 'email'))} — "
+                f"{birthday_post_status_label(record_get(row, 'status', 'sent'))}"
+                f"{birthday_post_error_suffix(record_get(row, 'error'))}"
                 for row in rows
             ]
             await respond(
@@ -301,6 +346,32 @@ async def handle_admin_command(
         )
         return
 
+    if subcommand == "preview":
+        if len(raw_parts) != 3:
+            await respond(
+                text="사용법: `/birthday admin preview YYYY-MM-DD`",
+                response_type="ephemeral",
+            )
+            return
+
+        preview_date = parse_iso_date(raw_parts[2])
+        if preview_date is None:
+            await respond(
+                text="사용법: `/birthday admin preview YYYY-MM-DD`",
+                response_type="ephemeral",
+            )
+            return
+
+        try:
+            text = await birthday_preview(pool=pool, preview_date=preview_date)
+        except Exception:
+            logger.exception("Failed to build birthday preview")
+            await respond_processing_error(respond)
+            return
+
+        await respond(text=text, response_type="ephemeral")
+        return
+
     if subcommand == "test-weekend":
         if settings is None:
             await respond(text="테스트 발송 설정을 찾을 수 없어요.", response_type="ephemeral")
@@ -330,10 +401,11 @@ async def handle_admin_command(
         )
         return
 
-    await respond(
-        text="사용 가능한 관리자 명령어: `/birthday admin list`, `/birthday admin log`, `/birthday admin sync`, `/birthday admin set @유저 MM-DD`, `/birthday admin reset-onboarding`, `/birthday admin test-birthday @유저`, `/birthday admin test-weekend @유저`",
-        response_type="ephemeral",
-    )
+    await respond_birthday_help(respond)
+
+
+async def respond_birthday_help(respond: Callable[..., Awaitable[Any]]) -> None:
+    await respond(text=BIRTHDAY_HELP_MESSAGE, response_type="ephemeral")
 
 
 async def slack_display_name(slack_user_id: str, fallback: str | None = None) -> str:
@@ -362,6 +434,18 @@ def record_get(row: Any, key: str, default: Any = None) -> Any:
         return row[key]
     except (KeyError, TypeError):
         return default
+
+
+def birthday_post_status_label(status: str) -> str:
+    return {
+        "sent": "발송완료",
+        "sending": "발송예약",
+        "failed": "발송실패",
+    }.get(status, status)
+
+
+def birthday_post_error_suffix(error: str | None) -> str:
+    return f" ({error})" if error else ""
 
 
 def format_birthday_status(row: Any | None) -> str:
@@ -425,6 +509,53 @@ def parse_month_day(value: str) -> tuple[int, int] | None:
     if 1 <= month <= 12 and 1 <= day <= calendar.monthrange(2024, month)[1]:
         return month, day
     return None
+
+
+def parse_iso_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+async def birthday_preview(*, pool: Any, preview_date: date) -> str:
+    from birthday import birthday_send_targets_for
+
+    send_targets = birthday_send_targets_for(preview_date)
+    targets_by_birthday = {
+        (target.birth_month, target.birth_day): target for target in send_targets
+    }
+    rows = await db.fetch_birthdays_for_targets(
+        pool, [(target.birth_month, target.birth_day) for target in send_targets]
+    )
+    if not rows:
+        return f"{preview_date:%Y-%m-%d}: 발송 대상 없음"
+
+    lines = [f"{preview_date:%Y-%m-%d} preview"]
+    for row in rows:
+        slack_user_id = row["slack_user_id"]
+        target = targets_by_birthday[(row["birth_month"], row["birth_day"])]
+        display_name = await slack_display_name(slack_user_id, record_get(row, "email"))
+        if await db.has_birthday_post(pool, slack_user_id, target.birthday_date):
+            status = "스킵: 이미 발송 기록 있음"
+        elif not row["receive_wishes"]:
+            status = "스킵: optout"
+        elif _slack_client is not None and not await is_preview_active_slack_member(slack_user_id):
+            status = "스킵: 비활성 Slack 유저"
+        else:
+            status = "발송 예정"
+
+        lines.append(
+            f"- {target.birthday_date:%Y-%m-%d} {display_name} (<@{slack_user_id}>): {status}"
+        )
+
+    return "\n".join(lines)
+
+
+async def is_preview_active_slack_member(slack_user_id: str) -> bool:
+    from birthday import is_active_slack_member
+
+    return await is_active_slack_member(_slack_client, slack_user_id)
 
 
 async def reset_onboarding(*, pool: Any, client: Any, settings: Any) -> bool:

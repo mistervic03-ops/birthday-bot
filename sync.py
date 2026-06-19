@@ -17,7 +17,6 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - checked when Excel sync runs.
     load_workbook = None  # type: ignore[assignment]
 
-from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 import db
@@ -72,7 +71,7 @@ async def sync_hr_sheet(
 
         slack_user_id = lookup.slack_user_id
         if slack_user_id is None:
-            logger.warning("Skipping HR row with unmatched email: %s", row.email)
+            logger.warning("Skipping HR row with unmatched email: %s", redact_email(row.email))
             skipped += 1
             continue
 
@@ -119,7 +118,7 @@ async def _sync_from_excel(file_path: str) -> ExcelSyncResult:
 
             slack_user_id = lookup.slack_user_id
             if slack_user_id is None:
-                logger.warning("Skipping Excel row with unmatched email: %s", row.email)
+                logger.warning("Skipping Excel row with unmatched email: %s", redact_email(row.email))
                 skipped += 1
                 continue
 
@@ -144,7 +143,7 @@ async def resolve_slack_id(client: AsyncWebClient, email: str) -> str | None:
 async def resolve_slack_id_for_batch(client: AsyncWebClient, email: str) -> SlackLookupResult:
     try:
         return SlackLookupResult(slack_user_id=await lookup_slack_user_by_email(client, email))
-    except SlackApiError as error:
+    except Exception as error:
         return await handle_slack_lookup_error(client, email, error)
 
 
@@ -155,37 +154,45 @@ async def lookup_slack_user_by_email(client: AsyncWebClient, email: str) -> str 
 
 
 async def handle_slack_lookup_error(
-    client: AsyncWebClient, email: str, error: SlackApiError
+    client: AsyncWebClient, email: str, error: Exception
 ) -> SlackLookupResult:
     reason = slack_error_reason(error)
     if reason == "users_not_found":
-        logger.warning("Skipping Slack lookup for %s: users_not_found", email)
+        logger.warning("Skipping Slack lookup for %s: users_not_found", redact_email(email))
         return SlackLookupResult()
 
     if reason == "ratelimited":
         retry_after = retry_after_seconds(error)
         logger.error(
             "Slack lookup for %s was rate limited; retrying after %s seconds",
-            email,
+            redact_email(email),
             retry_after,
         )
         await asyncio.sleep(retry_after)
         return await retry_slack_lookup_once(client, email)
 
-    logger.error("Slack lookup for %s failed: %s", email, reason, exc_info=True)
+    logger.error("Slack lookup for %s failed: %s", redact_email(email), reason, exc_info=True)
     return SlackLookupResult(abort_batch=True)
 
 
 async def retry_slack_lookup_once(client: AsyncWebClient, email: str) -> SlackLookupResult:
     try:
         return SlackLookupResult(slack_user_id=await lookup_slack_user_by_email(client, email))
-    except SlackApiError as error:
+    except Exception as error:
         reason = slack_error_reason(error)
         if reason == "users_not_found":
-            logger.warning("Skipping Slack lookup for %s after retry: users_not_found", email)
+            logger.warning(
+                "Skipping Slack lookup for %s after retry: users_not_found",
+                redact_email(email),
+            )
             return SlackLookupResult()
 
-        logger.error("Slack lookup retry for %s failed: %s", email, reason, exc_info=True)
+        logger.error(
+            "Slack lookup retry for %s failed: %s",
+            redact_email(email),
+            reason,
+            exc_info=True,
+        )
         return SlackLookupResult(abort_batch=True)
 
 
@@ -374,6 +381,14 @@ def _valid_month_day(month: str, day: str) -> tuple[int, int] | None:
     if 1 <= month_int <= 12 and 1 <= day_int <= calendar.monthrange(2024, month_int)[1]:
         return month_int, day_int
     return None
+
+
+def redact_email(email: str) -> str:
+    local, separator, domain = email.partition("@")
+    if not separator:
+        return "[redacted]"
+    visible = local[:1] if local else ""
+    return f"{visible}***@{domain}"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -39,20 +39,33 @@ async def run_birthday_job(
 def create_scheduler(
     *, pool: asyncpg.Pool, client: AsyncWebClient, settings: Settings
 ) -> AsyncIOScheduler:
-    scheduler = AsyncIOScheduler(timezone=settings.timezone)
+    scheduler = AsyncIOScheduler(
+        timezone=settings.timezone,
+        job_defaults={"coalesce": True, "max_instances": 1},
+    )
 
     scheduler.add_job(
         run_sync_job,
         "cron",
+        id="sync_hr_sheet",
+        replace_existing=True,
         hour=8,
         minute=50,
+        misfire_grace_time=900,
+        coalesce=True,
+        max_instances=1,
         kwargs={"pool": pool, "client": client, "settings": settings},
     )
     scheduler.add_job(
         run_birthday_job,
         "cron",
+        id="send_today_birthdays",
+        replace_existing=True,
         hour=9,
         minute=0,
+        misfire_grace_time=900,
+        coalesce=True,
+        max_instances=1,
         kwargs={"pool": pool, "client": client, "settings": settings},
     )
     return scheduler
