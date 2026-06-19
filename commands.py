@@ -156,17 +156,37 @@ async def route_birthday_command(
 
     if text == "status":
         try:
-            logger.info("Birthday status requested by user_id=%s", slack_user_id)
+            trace_id = command_trace_id(command)
+            logger.info(
+                "Birthday status requested trace_id=%s user_id=%s text=%r",
+                trace_id,
+                slack_user_id,
+                raw_text,
+            )
             receive_wishes = await db.get_receive_wishes(pool, slack_user_id)
             birthday_record = await db.fetch_active_birthday_for_user(pool, slack_user_id)
+            logger.info(
+                "Birthday status birthday_record trace_id=%s user_id=%s receive_wishes=%s record=%r",
+                trace_id,
+                slack_user_id,
+                receive_wishes,
+                birthday_record,
+            )
             status = (
                 "현재 생일 공지를 받고 계세요 🎂"
                 if receive_wishes
                 else "현재 생일 공지를 받지 않고 있어요"
             )
             birthday_status = format_birthday_status(birthday_record)
+            response_text = f"{status}\n{birthday_status}"
+            logger.info(
+                "Birthday status responding trace_id=%s user_id=%s response=%r",
+                trace_id,
+                slack_user_id,
+                response_text,
+            )
             await respond(
-                text=f"{status}\n{birthday_status}",
+                text=response_text,
                 response_type="ephemeral",
             )
         except Exception:
@@ -441,6 +461,18 @@ def record_get(row: Any, key: str, default: Any = None) -> Any:
         return row[key]
     except (KeyError, TypeError):
         return default
+
+
+def command_trace_id(command: dict[str, Any]) -> str:
+    request_id = command.get("request_id")
+    if request_id:
+        return f"request:{str(request_id)[:12]}"
+
+    trigger_id = command.get("trigger_id")
+    if trigger_id:
+        return f"trigger:{str(trigger_id)[:12]}"
+
+    return "none"
 
 
 def birthday_post_status_label(status: str) -> str:
