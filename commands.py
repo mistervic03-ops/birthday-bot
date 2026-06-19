@@ -156,6 +156,7 @@ async def route_birthday_command(
 
     if text == "status":
         try:
+            logger.info("Birthday status requested by user_id=%s", slack_user_id)
             receive_wishes = await db.get_receive_wishes(pool, slack_user_id)
             birthday_record = await db.fetch_active_birthday_for_user(pool, slack_user_id)
             status = (
@@ -280,6 +281,12 @@ async def handle_admin_command(
                 return
 
             birth_month, birth_day = birthday
+            logger.info(
+                "Admin set birthday target user_id=%s date=%s-%s",
+                target_user_id,
+                birth_month,
+                birth_day,
+            )
             await db.upsert_birthday(
                 pool,
                 slack_user_id=target_user_id,
