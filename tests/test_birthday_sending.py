@@ -15,8 +15,8 @@ class FakeSlackClient:
     async def users_info(self, *, user: str) -> dict:
         return {"user": {"id": user, "deleted": False, "is_bot": False}}
 
-    async def chat_postMessage(self, *, channel: str, text: str) -> None:
-        self.messages.append({"channel": channel, "text": text})
+    async def chat_postMessage(self, *, channel: str, text: str, **kwargs) -> None:
+        self.messages.append({"channel": channel, "text": text, **kwargs})
 
 
 def run(coro):
@@ -56,11 +56,15 @@ def test_friday_sends_saturday_and_sunday_birthdays(monkeypatch) -> None:
     run(birthday.send_today_birthdays(pool=object(), client=client, settings=settings, today=date(2026, 6, 19)))
 
     channel_messages = [message["text"] for message in client.messages if message["channel"] == "CBIRTHDAY"]
+    channel_usernames = [
+        message.get("username") for message in client.messages if message["channel"] == "CBIRTHDAY"
+    ]
     assert fetched_targets == [(6, 19), (6, 20), (6, 21)]
     assert channel_messages == [
         "🎂 이번 주 토요일은 <@USAT> 님의 생일이에요! 미리 축하 메시지 남겨주세요 🎉",
         "🎂 이번 주 일요일은 <@USUN> 님의 생일이에요! 미리 축하 메시지 남겨주세요 🎉",
     ]
+    assert channel_usernames == ["빅스데이", "빅스데이"]
     assert recorded_posts == [("USAT", date(2026, 6, 20)), ("USUN", date(2026, 6, 21))]
 
 
@@ -113,5 +117,6 @@ def test_record_birthday_post_false_skips_dm(monkeypatch) -> None:
         {
             "channel": "CBIRTHDAY",
             "text": "🎂 오늘은 <@UUSER> 님의 생일이에요! 다 같이 축하해드려요 🎉",
+            "username": "빅스데이",
         },
     ]

@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 CHANNEL_MESSAGE = "🎂 오늘은 <@{slack_user_id}> 님의 생일이에요! 다 같이 축하해드려요 🎉"
 WEEKEND_EARLY_MESSAGE = "🎂 이번 주 {weekday_label}은 <@{slack_user_id}> 님의 생일이에요! 미리 축하 메시지 남겨주세요 🎉"
 DM_MESSAGE = "🎂 <@{slack_user_id}> 님, 생일 축하드려요! 오늘 하루 행복하게 보내세요 ☀️"
+WEEKEND_EARLY_DM_MESSAGE = "🎂 <@{slack_user_id}> 님, 이번 주 {weekday_label}이 생일이시네요! 미리 축하드려요 🎉"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,17 @@ def message_for_target(today: date, target_date: date) -> str:
 
     weekday_label = "토요일" if target_date.weekday() == 5 else "일요일"
     return WEEKEND_EARLY_MESSAGE.format(weekday_label=weekday_label, slack_user_id="{slack_user_id}")
+
+
+def dm_message_for_target(today: date, target_date: date) -> str:
+    if target_date == today:
+        return DM_MESSAGE
+
+    weekday_label = "토요일" if target_date.weekday() == 5 else "일요일"
+    return WEEKEND_EARLY_DM_MESSAGE.format(
+        weekday_label=weekday_label,
+        slack_user_id="{slack_user_id}",
+    )
 
 
 async def is_active_slack_member(client: AsyncWebClient, slack_user_id: str) -> bool:
@@ -123,6 +135,7 @@ async def send_today_birthdays(
                 await client.chat_postMessage(
                     channel=settings.birthday_channel_id,
                     text=target.message.format(slack_user_id=slack_user_id),
+                    username="빅스데이",
                 )
             except SlackApiError as error:
                 logger.exception(
@@ -149,11 +162,11 @@ async def send_today_birthdays(
                 )
                 continue
 
-            await send_birthday_dm(client, slack_user_id)
+            await send_birthday_dm(client, slack_user_id, dm_message_for_target(today, birthday_date))
 
 
-async def send_birthday_dm(client: AsyncWebClient, slack_user_id: str) -> None:
+async def send_birthday_dm(client: AsyncWebClient, slack_user_id: str, message: str = DM_MESSAGE) -> None:
     try:
-        await client.chat_postMessage(channel=slack_user_id, text=DM_MESSAGE.format(slack_user_id=slack_user_id))
+        await client.chat_postMessage(channel=slack_user_id, text=message.format(slack_user_id=slack_user_id))
     except SlackApiError:
         logger.warning("Failed to send birthday DM to %s", slack_user_id, exc_info=True)

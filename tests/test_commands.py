@@ -587,7 +587,7 @@ def test_admin_test_weekend_sends_saturday_message_without_duplicate_check(monke
         },
         {
             "channel": "UUSER",
-            "text": "🎂 <@UUSER> 님, 생일 축하드려요! 오늘 하루 행복하게 보내세요 ☀️",
+            "text": "🎂 <@UUSER> 님, 이번 주 토요일이 생일이시네요! 미리 축하드려요 🎉",
         },
     ]
     assert responses == [{"text": "주말 테스트 발송 완료: <@UUSER>", "response_type": "ephemeral"}]

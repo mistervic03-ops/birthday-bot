@@ -465,9 +465,13 @@ async def send_test_birthday(*, settings: Any, target_user_id: str) -> None:
 
 
 async def send_test_weekend(*, settings: Any, target_user_id: str) -> None:
-    from birthday import DM_MESSAGE, WEEKEND_EARLY_MESSAGE
+    from birthday import WEEKEND_EARLY_DM_MESSAGE, WEEKEND_EARLY_MESSAGE
 
     text = WEEKEND_EARLY_MESSAGE.format(
+        weekday_label="토요일",
+        slack_user_id=target_user_id,
+    )
+    dm_text = WEEKEND_EARLY_DM_MESSAGE.format(
         weekday_label="토요일",
         slack_user_id=target_user_id,
     )
@@ -475,7 +479,7 @@ async def send_test_weekend(*, settings: Any, target_user_id: str) -> None:
         await _slack_client.chat_postMessage(channel=settings.birthday_channel_id, text=text)
         await _slack_client.chat_postMessage(
             channel=target_user_id,
-            text=DM_MESSAGE.format(slack_user_id=target_user_id),
+            text=dm_text,
         )
     except Exception as error:
         logger.warning("Failed to send test weekend message", exc_info=True)
