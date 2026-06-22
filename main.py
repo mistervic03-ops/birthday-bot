@@ -13,6 +13,7 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 import db
 from commands import register_commands
 from config import load_settings
+from home import register_home
 from onboarding import ensure_onboarding_message
 from scheduler import create_scheduler
 
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
     try:
         pool = await db.create_pool(settings.database_url)
         register_commands(slack_app, pool, settings)
+        register_home(slack_app, pool, settings)
         await ensure_onboarding_message(pool=pool, client=slack_app.client, settings=settings)
 
         scheduler = create_scheduler(pool=pool, client=slack_app.client, settings=settings)
