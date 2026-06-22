@@ -42,17 +42,51 @@ Slack Socket Mode bot that syncs birthdays from an HR Excel file and sends daily
    | `HR_EXCEL_PATH` | Yes | Path to the HR Excel file. Absolute paths and project-relative paths are both supported by the runtime environment. |
    | `ADMIN_USER_IDS` | No | Comma-separated Slack user IDs that should receive admin command access in addition to workspace Admins/Owners. |
 
-4. Start the app:
+4. Start the app for local development:
 
    ```bash
    uvicorn main:app --reload
    ```
 
-5. Check the health endpoint:
+5. Check the local health endpoint:
 
    ```bash
    curl http://127.0.0.1:8000/health
    ```
+
+## Spark Deployment
+
+The current Spark deployment runs under systemd on the Spark host.
+
+- Server user and host: `bigxdata@192.168.3.41`
+- App directory: `/home/bigxdata/birthday-bot`
+- Service: `birthday-bot.service`
+- Environment file: `/home/bigxdata/birthday-bot/.env`
+- Port: `8010`
+- Database: local PostgreSQL database `birthday_bot` with user `birthday_bot`
+- HR Excel file: `/home/bigxdata/birthday-bot/data/hr_birthdays.xlsx`
+
+The systemd service runs:
+
+```bash
+/home/bigxdata/birthday-bot/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8010
+```
+
+The Spark `.env` should include:
+
+```bash
+DATABASE_URL=postgresql://birthday_bot:<password>@localhost:5432/birthday_bot
+HR_EXCEL_PATH=/home/bigxdata/birthday-bot/data/hr_birthdays.xlsx
+TIMEZONE=Asia/Seoul
+```
+
+Check the deployed service with:
+
+```bash
+systemctl status birthday-bot.service --no-pager
+curl http://127.0.0.1:8010/health
+journalctl -u birthday-bot.service --since "10 minutes ago" --no-pager
+```
 
 ## Runtime Flow
 
@@ -193,8 +227,8 @@ Current tests cover birthday date logic, Friday weekend announcements, command r
 Useful manual checks before deployment:
 
 ```bash
-# Health check
-curl http://127.0.0.1:8000/health
+# Spark health check
+curl http://127.0.0.1:8010/health
 
 # Preview a date without posting to Slack
 /birthday admin preview 2026-06-19
@@ -208,4 +242,4 @@ curl http://127.0.0.1:8000/health
 - The project currently uses app-startup schema creation, not a migration tool.
 - Integration tests for real Slack and Postgres are not included yet.
 - Deployment files such as Dockerfile, docker-compose, and CI workflows are not included yet.
-- For Spark deployment, run this as a long-lived FastAPI process, for example with `uvicorn main:app --host 0.0.0.0 --port 8000` under Spark's process manager or a service supervisor. Set all environment variables in Spark rather than relying on a local `.env` file.
+- Spark deployment is managed by `birthday-bot.service`, which loads `/home/bigxdata/birthday-bot/.env` and serves FastAPI on port `8010`.

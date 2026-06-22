@@ -28,6 +28,21 @@ Required settings in the current code:
 
 `config.py` parses `ADMIN_USER_IDS` into `settings.admin_user_ids`. Missing or empty values become an empty list.
 
+## Spark Deployment
+
+The current Spark deployment runs as a single systemd service:
+
+- Host: `bigxdata@192.168.3.41`
+- App directory: `/home/bigxdata/birthday-bot`
+- Service: `birthday-bot.service`
+- Environment file: `/home/bigxdata/birthday-bot/.env`
+- ExecStart: `/home/bigxdata/birthday-bot/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8010`
+- Health endpoint: `http://127.0.0.1:8010/health`
+- Database: local PostgreSQL database `birthday_bot` with user `birthday_bot`
+- HR Excel file: `/home/bigxdata/birthday-bot/data/hr_birthdays.xlsx`
+
+Operational changes should only target `birthday-bot.service` and files under `/home/bigxdata/birthday-bot`.
+
 ## Startup
 
 `main.py` creates the Slack app and FastAPI app.
