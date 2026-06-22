@@ -131,7 +131,7 @@ def build_home_view(data: HomeData) -> dict[str, Any]:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": "오늘의 생일과 개인 설정을 확인하세요.",
+                    "text": "오늘의 생일 소식과 내 공지 설정을 한눈에 확인하세요.",
                 }
             ],
         },
@@ -140,8 +140,7 @@ def build_home_view(data: HomeData) -> dict[str, Any]:
         primary_action_block(data.receive_wishes),
         {"type": "divider"},
         today_birthdays_block(data.today_birthdays),
-        how_it_works_block(),
-        commands_block(),
+        today_birthdays_context_block(data.today_birthdays),
     ]
 
     if data.is_admin:
@@ -223,25 +222,16 @@ def today_birthdays_block(rows: list[Any]) -> dict[str, Any]:
     }
 
 
-def how_it_works_block() -> dict[str, Any]:
+def today_birthdays_context_block(rows: list[Any]) -> dict[str, Any]:
+    context_text = (
+        "오전 9시에 생일 공지가 발송됩니다."
+        if rows
+        else "새로운 생일 소식이 있으면 이곳에서 확인할 수 있습니다."
+    )
     return {
-        "type": "section",
-        "block_id": "bigxday_home_how_it_works",
-        "text": {
-            "type": "mrkdwn",
-            "text": "*운영 방식*\n• 매일 오전 9시 생일 공지\n• 주말 생일은 금요일에 미리 안내\n• HR 명부 기준 자동 동기화",
-        },
-    }
-
-
-def commands_block() -> dict[str, Any]:
-    return {
-        "type": "section",
-        "block_id": "bigxday_home_commands",
-        "text": {
-            "type": "mrkdwn",
-            "text": "*명령어*\n`/birthday status`  현재 상태 확인\n`/birthday optout`  생일 공지 받지 않기\n`/birthday optin`  생일 공지 다시 받기",
-        },
+        "type": "context",
+        "block_id": "bigxday_home_today_context",
+        "elements": [{"type": "mrkdwn", "text": context_text}],
     }
 
 

@@ -59,6 +59,7 @@ def test_registered_user_rendering() -> None:
 
     text = view_text(view)
     assert "🎂 Bigxday" in text
+    assert "오늘의 생일 소식과 내 공지 설정을 한눈에 확인하세요." in text
     assert "*내 생일 정보*" in text
     assert "03월 15일" in text
     assert "받는 중" in text
@@ -121,6 +122,10 @@ def test_regular_user_does_not_see_admin_section() -> None:
 
     assert "bigxday_home_admin_summary" not in block_ids(view)
     assert "/birthday admin sync" not in view_text(view)
+    assert "bigxday_home_commands" not in block_ids(view)
+    assert "bigxday_home_how_it_works" not in block_ids(view)
+    assert "/birthday status" not in view_text(view)
+    assert "운영 방식" not in view_text(view)
 
 
 def test_admin_sees_admin_section() -> None:
@@ -154,6 +159,7 @@ def test_today_birthdays_empty_state() -> None:
     text = view_text(view)
     assert "🎉 오늘 생일인 동료" in text
     assert "오늘 생일인 동료가 없습니다." in text
+    assert "새로운 생일 소식이 있으면 이곳에서 확인할 수 있습니다." in text
 
 
 def test_today_birthdays_with_users() -> None:
@@ -172,6 +178,7 @@ def test_today_birthdays_with_users() -> None:
     assert "🎉 오늘 생일인 동료" in text
     assert "• <@UUSER>" in text
     assert "• <@UOTHER>" in text
+    assert "오전 9시에 생일 공지가 발송됩니다." in text
 
 
 def test_load_home_data_uses_only_today_targets(monkeypatch) -> None:
