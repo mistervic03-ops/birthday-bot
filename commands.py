@@ -15,19 +15,24 @@ logger = logging.getLogger(__name__)
 _slack_client: Any | None = None
 PROCESSING_ERROR_MESSAGE = "앗, 처리 중에 문제가 생겼어요. 잠시 후 다시 시도해주세요 🙏"
 USER_NOT_FOUND_MESSAGE = "해당 유저를 찾지 못했어요. 멘션으로 다시 시도해주세요!"
-BIRTHDAY_HELP_MESSAGE = """*🎂 Birthday Bot*
+BIRTHDAY_USER_HELP_MESSAGE = """*🎂 Bigxday*
 
-*일반 사용자*
-• `/birthday optout`
-생일 공지 수신 끄기
+App Home에서 생일 상태와 공지 설정을 바로 확인할 수 있어요.
 
-• `/birthday optin`
-생일 공지 다시 받기
+필요할 때는 아래 명령어도 사용할 수 있습니다.
 
 • `/birthday status`
-내 생일 등록 상태와 수신 설정 확인
+내 생일 등록 상태와 공지 설정 확인
 
-*관리자*
+• `/birthday optout`
+생일 공지 받지 않기
+
+• `/birthday optin`
+생일 공지 다시 받기"""
+
+BIRTHDAY_ADMIN_HELP_MESSAGE = f"""{BIRTHDAY_USER_HELP_MESSAGE}
+
+*관리자 명령어*
 • `/birthday admin list`
 활성 생일자 목록 확인
 
@@ -56,6 +61,8 @@ HR 명부 동기화
 • 매일 오전 9시 자동 실행
 • 중복 발송 방지 적용
 • 비활성 Slack 계정 자동 제외"""
+
+BIRTHDAY_HELP_MESSAGE = BIRTHDAY_ADMIN_HELP_MESSAGE
 
 
 SyncRunner = Callable[..., Awaitable[Any]]
@@ -116,8 +123,11 @@ async def route_birthday_command(
     text = raw_text.lower()
     parts = text.split()
 
-    if text in {"", "help", "admin help"}:
-        await respond_birthday_help(respond)
+    if text in {"", "help"}:
+        await respond_birthday_help(
+            respond,
+            is_admin=await is_workspace_admin(slack_user_id, settings),
+        )
         return
 
     if parts and parts[0] == "admin":
@@ -194,7 +204,10 @@ async def route_birthday_command(
             await respond_processing_error(respond)
         return
 
-    await respond_birthday_help(respond)
+    await respond_birthday_help(
+        respond,
+        is_admin=await is_workspace_admin(slack_user_id, settings),
+    )
 
 
 async def handle_admin_command(
@@ -213,6 +226,10 @@ async def handle_admin_command(
     raw_parts = (command.get("text") or "").strip().split()
     parts = [part.lower() for part in raw_parts]
     subcommand = parts[1] if len(parts) > 1 else ""
+
+    if subcommand == "help":
+        await respond_birthday_help(respond, is_admin=True)
+        return
 
     if subcommand == "list":
         try:
@@ -428,11 +445,14 @@ async def handle_admin_command(
         )
         return
 
-    await respond_birthday_help(respond)
+    await respond_birthday_help(respond, is_admin=True)
 
 
-async def respond_birthday_help(respond: Callable[..., Awaitable[Any]]) -> None:
-    await respond(text=BIRTHDAY_HELP_MESSAGE, response_type="ephemeral")
+async def respond_birthday_help(
+    respond: Callable[..., Awaitable[Any]], *, is_admin: bool = False
+) -> None:
+    text = BIRTHDAY_ADMIN_HELP_MESSAGE if is_admin else BIRTHDAY_USER_HELP_MESSAGE
+    await respond(text=text, response_type="ephemeral")
 
 
 async def slack_display_name(slack_user_id: str, fallback: str | None = None) -> str:

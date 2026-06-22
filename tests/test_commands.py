@@ -101,9 +101,10 @@ def processing_error_response() -> dict:
     return {"text": commands.PROCESSING_ERROR_MESSAGE, "response_type": "ephemeral"}
 
 
-def test_help_is_returned_for_empty_help_unknown_and_admin_help() -> None:
+def test_regular_help_hides_admin_commands() -> None:
+    commands._slack_client = FakeSlackClient()
     responses, respond = make_responder()
-    for text in ("", "help", "unknown", "admin help"):
+    for text in ("", "help", "unknown"):
         run(
             commands.route_birthday_command(
                 pool=object(),
@@ -114,11 +115,55 @@ def test_help_is_returned_for_empty_help_unknown_and_admin_help() -> None:
         )
 
     assert responses == [
-        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
-        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
-        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
-        {"text": commands.BIRTHDAY_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_USER_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_USER_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_USER_HELP_MESSAGE, "response_type": "ephemeral"},
     ]
+    assert "/birthday admin sync" not in commands.BIRTHDAY_USER_HELP_MESSAGE
+
+
+def test_admin_help_shows_admin_commands() -> None:
+    commands._slack_client = FakeSlackClient()
+    responses, respond = make_responder()
+
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "help"},
+            respond=respond,
+        )
+    )
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UADMIN", "text": "admin help"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [
+        {"text": commands.BIRTHDAY_ADMIN_HELP_MESSAGE, "response_type": "ephemeral"},
+        {"text": commands.BIRTHDAY_ADMIN_HELP_MESSAGE, "response_type": "ephemeral"},
+    ]
+    assert "/birthday admin sync" in commands.BIRTHDAY_ADMIN_HELP_MESSAGE
+
+
+def test_admin_help_rejects_regular_user() -> None:
+    commands._slack_client = FakeSlackClient()
+    responses, respond = make_responder()
+
+    run(
+        commands.route_birthday_command(
+            pool=object(),
+            settings=object(),
+            command={"user_id": "UNORMAL", "text": "admin help"},
+            respond=respond,
+        )
+    )
+
+    assert responses == [{"text": "이 커맨드는 관리자만 사용할 수 있어요 🙏", "response_type": "ephemeral"}]
 
 
 def test_admin_list_and_log_render_success(monkeypatch) -> None:
