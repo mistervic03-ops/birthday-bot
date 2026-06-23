@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS birthdays (
     birth_month     SMALLINT NOT NULL CHECK (birth_month BETWEEN 1 AND 12),
     birth_day       SMALLINT NOT NULL CHECK (birth_day BETWEEN 1 AND 31),
     email           VARCHAR(100),
+    source          VARCHAR(20) NOT NULL DEFAULT 'hr' CHECK (source IN ('hr', 'manual')),
     is_active       BOOLEAN DEFAULT TRUE,
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -59,6 +60,37 @@ SET sent_at = COALESCE(sent_at, posted_at),
 WHERE status = 'sent';
 
 DO $$
+DECLARE
+    source_column_exists BOOLEAN;
+BEGIN
+    SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'birthdays'
+          AND column_name = 'source'
+    ) INTO source_column_exists;
+
+    IF NOT source_column_exists THEN
+        ALTER TABLE birthdays ADD COLUMN source VARCHAR(20);
+
+        UPDATE birthdays
+        SET source = CASE
+            WHEN email IS NULL THEN 'manual'
+            ELSE 'hr'
+        END;
+
+        UPDATE birthdays
+        SET is_active = TRUE,
+            updated_at = NOW()
+        WHERE source = 'manual'
+          AND is_active = FALSE;
+
+        ALTER TABLE birthdays ALTER COLUMN source SET DEFAULT 'hr';
+        ALTER TABLE birthdays ALTER COLUMN source SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1
@@ -68,6 +100,19 @@ BEGIN
         ALTER TABLE birthday_posts
             ADD CONSTRAINT birthday_posts_status_check
             CHECK (status IN ('sending', 'sent', 'failed'));
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'birthdays_source_check'
+    ) THEN
+        ALTER TABLE birthdays
+            ADD CONSTRAINT birthdays_source_check
+            CHECK (source IN ('hr', 'manual'));
     END IF;
 END $$;
 """
@@ -94,15 +139,20 @@ async def upsert_birthday(
     birth_month: int,
     birth_day: int,
     email: str | None,
+    source: str = "hr",
 ) -> None:
+    if source not in {"hr", "manual"}:
+        raise ValueError(f"Invalid birthday source: {source}")
+
     await pool.execute(
         """
-        INSERT INTO birthdays (slack_user_id, birth_month, birth_day, email, is_active, updated_at)
-        VALUES ($1, $2, $3, $4, TRUE, NOW())
+        INSERT INTO birthdays (slack_user_id, birth_month, birth_day, email, source, is_active, updated_at)
+        VALUES ($1, $2, $3, $4, $5, TRUE, NOW())
         ON CONFLICT (slack_user_id) DO UPDATE
         SET birth_month = EXCLUDED.birth_month,
             birth_day = EXCLUDED.birth_day,
             email = EXCLUDED.email,
+            source = EXCLUDED.source,
             is_active = TRUE,
             updated_at = NOW()
         """,
@@ -110,6 +160,7 @@ async def upsert_birthday(
         birth_month,
         birth_day,
         email,
+        source,
     )
 
 
@@ -123,6 +174,7 @@ async def mark_missing_birthdays_inactive(
             UPDATE birthdays
             SET is_active = FALSE, updated_at = NOW()
             WHERE is_active = TRUE
+              AND source = 'hr'
               AND NOT (slack_user_id = ANY($1::varchar[]))
             RETURNING 1
         )

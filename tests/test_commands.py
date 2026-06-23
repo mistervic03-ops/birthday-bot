@@ -406,13 +406,14 @@ def test_admin_set_upserts_birthday(monkeypatch) -> None:
     commands._slack_client = FakeSlackClient()
     upsert_calls = []
 
-    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email, source):
         upsert_calls.append(
             {
                 "slack_user_id": slack_user_id,
                 "birth_month": birth_month,
                 "birth_day": birth_day,
                 "email": email,
+                "source": source,
             }
         )
 
@@ -429,7 +430,13 @@ def test_admin_set_upserts_birthday(monkeypatch) -> None:
     )
 
     assert upsert_calls == [
-        {"slack_user_id": "UUSER", "birth_month": 3, "birth_day": 15, "email": None}
+        {
+            "slack_user_id": "UUSER",
+            "birth_month": 3,
+            "birth_day": 15,
+            "email": None,
+            "source": "manual",
+        }
     ]
     assert responses == [
         {
@@ -468,7 +475,7 @@ def test_admin_list_and_log_return_ephemeral_on_db_error(monkeypatch) -> None:
 def test_admin_set_returns_ephemeral_on_db_error(monkeypatch) -> None:
     commands._slack_client = FakeSlackClient()
 
-    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email, source):
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(commands.db, "upsert_birthday", upsert_birthday)
@@ -490,8 +497,8 @@ def test_admin_set_accepts_labeled_mention_and_case_insensitive_username(monkeyp
     commands._slack_client = FakeSlackClient()
     upsert_calls = []
 
-    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
-        upsert_calls.append((slack_user_id, birth_month, birth_day, email))
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email, source):
+        upsert_calls.append((slack_user_id, birth_month, birth_day, email, source))
 
     monkeypatch.setattr(commands.db, "upsert_birthday", upsert_birthday)
 
@@ -513,7 +520,10 @@ def test_admin_set_accepts_labeled_mention_and_case_insensitive_username(monkeyp
         )
     )
 
-    assert upsert_calls == [("UUSER", 3, 15, None), ("UOTHER", 4, 2, None)]
+    assert upsert_calls == [
+        ("UUSER", 3, 15, None, "manual"),
+        ("UOTHER", 4, 2, None, "manual"),
+    ]
     assert responses == [
         {
             "text": "<@UUSER> 님의 생일을 03-15로 등록했습니다.",

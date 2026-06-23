@@ -100,13 +100,14 @@ def test_sync_hr_sheet_reads_configured_excel_path(tmp_path, monkeypatch) -> Non
 
     upserts = []
 
-    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email, source):
         upserts.append(
             {
                 "slack_user_id": slack_user_id,
                 "birth_month": birth_month,
                 "birth_day": birth_day,
                 "email": email,
+                "source": source,
             }
         )
 
@@ -133,6 +134,7 @@ def test_sync_hr_sheet_reads_configured_excel_path(tmp_path, monkeypatch) -> Non
             "birth_month": 3,
             "birth_day": 21,
             "email": "hong@example.com",
+            "source": "hr",
         }
     ]
 
@@ -160,8 +162,8 @@ def test_sync_hr_sheet_returns_counts_before_lookup_abort(tmp_path, monkeypatch,
 
     upserts = []
 
-    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email):
-        upserts.append(slack_user_id)
+    async def upsert_birthday(pool, *, slack_user_id, birth_month, birth_day, email, source):
+        upserts.append((slack_user_id, source))
 
     async def mark_missing_birthdays_inactive(pool, active_slack_user_ids):
         raise AssertionError("soft-delete should be skipped on batch abort")
@@ -180,5 +182,5 @@ def test_sync_hr_sheet_returns_counts_before_lookup_abort(tmp_path, monkeypatch,
     assert result.upserted == 1
     assert result.skipped == 1
     assert result.deactivated == 0
-    assert upserts == ["U123"]
+    assert upserts == [("U123", "hr")]
     assert "1 upserted, 1 skipped before batch abort" in caplog.text

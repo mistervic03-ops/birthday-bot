@@ -330,6 +330,7 @@ async def handle_admin_command(
                 birth_month=birth_month,
                 birth_day=birth_day,
                 email=None,
+                source="manual",
             )
             await respond(
                 text=f"<@{target_user_id}> 님의 생일을 {birth_month:02d}-{birth_day:02d}로 등록했습니다.",

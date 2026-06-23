@@ -81,6 +81,7 @@ async def sync_hr_sheet(
             birth_month=row.birth_month,
             birth_day=row.birth_day,
             email=row.email,
+            source="hr",
         )
         active_slack_user_ids.append(slack_user_id)
         upserted += 1
@@ -128,6 +129,7 @@ async def _sync_from_excel(file_path: str) -> ExcelSyncResult:
                 birth_month=row.birth_month,
                 birth_day=row.birth_day,
                 email=row.email,
+                source="hr",
             )
             upserted += 1
     finally:
