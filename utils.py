@@ -15,4 +15,4 @@ def slack_error_reason(error: Exception) -> str:
         if isinstance(data, dict) and data.get("error"):
             return str(data["error"])
 
-    return str(error) or error.__class__.__name__
+    return error.__class__.__name__

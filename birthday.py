@@ -84,7 +84,7 @@ async def is_active_slack_member(client: AsyncWebClient, slack_user_id: str) -> 
     try:
         result = await client.users_info(user=slack_user_id)
     except SlackApiError:
-        logger.warning("Failed to look up Slack user %s", slack_user_id, exc_info=True)
+        logger.warning("Failed to look up Slack user")
         return False
 
     user = result["user"]
@@ -117,23 +117,23 @@ async def send_today_birthdays(
         birthday_date = target.birthday_date
         async with db.birthday_send_lock(pool, slack_user_id, birthday_date) as locked:
             if not locked:
-                logger.info("Skipping locked birthday send for %s", slack_user_id)
+                logger.info("Skipping locked birthday send")
                 continue
 
             if await db.has_birthday_post(pool, slack_user_id, birthday_date):
                 continue
 
             if not row["receive_wishes"]:
-                logger.info("Skipping birthday for opted-out user %s", slack_user_id)
+                logger.info("Skipping birthday for opted-out user")
                 continue
 
             if not await is_active_slack_member(client, slack_user_id):
-                logger.info("Skipping inactive Slack user %s", slack_user_id)
+                logger.info("Skipping inactive Slack user")
                 continue
 
             reserved = await db.reserve_birthday_post(pool, slack_user_id, birthday_date)
             if not reserved:
-                logger.info("Skipping already reserved birthday send for %s", slack_user_id)
+                logger.info("Skipping already reserved birthday send")
                 continue
 
             try:
@@ -153,13 +153,8 @@ async def send_today_birthdays(
                 except Exception:
                     logger.critical(
                         "Failed to mark birthday announcement failure",
-                        exc_info=True,
                     )
-                logger.exception(
-                    "Failed to post birthday announcement for %s: %s",
-                    slack_user_id,
-                    slack_error_reason(error),
-                )
+                logger.warning("Failed to post birthday announcement: %s", slack_error_reason(error))
                 continue
 
             try:
@@ -172,7 +167,6 @@ async def send_today_birthdays(
             except Exception:
                 logger.critical(
                     "공지는 갔지만 성공 상태 업데이트 실패 — birthday_posts 예약으로 자동 중복 발송은 차단됨",
-                    exc_info=True,
                 )
                 continue
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,7 +26,7 @@ def load_settings() -> Settings:
         slack_bot_token=_required_env("SLACK_BOT_TOKEN"),
         slack_app_token=_required_env("SLACK_APP_TOKEN"),
         database_url=_required_env("DATABASE_URL"),
-        birthday_channel_id=_required_env("BIRTHDAY_CHANNEL_ID"),
+        birthday_channel_id=_channel_id_env("BIRTHDAY_CHANNEL_ID"),
         hr_excel_path=_required_env("HR_EXCEL_PATH"),
         admin_user_ids=_csv_env("ADMIN_USER_IDS"),
         timezone=_timezone_env("TIMEZONE", "Asia/Seoul"),
@@ -44,6 +45,13 @@ def _csv_env(name: str) -> list[str]:
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _channel_id_env(name: str) -> str:
+    value = _required_env(name)
+    if not re.fullmatch(r"[CG][A-Z0-9]+", value):
+        raise RuntimeError(f"Invalid Slack channel ID in {name}")
+    return value
 
 
 def _timezone_env(name: str, default: str) -> str:

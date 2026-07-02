@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 async def safe_job(name: str, coro: Awaitable[object]) -> None:
     try:
         await coro
-    except Exception as e:
-        logger.critical(f"Scheduled job '{name}' failed: {e}", exc_info=True)
+    except Exception as error:
+        logger.critical("Scheduled job '%s' failed: %s", name, error.__class__.__name__)
 
 
 async def run_sync_job(

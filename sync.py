@@ -227,7 +227,7 @@ def read_excel_rows(file_path: str) -> tuple[list[BirthdayRow], int]:
     if load_workbook is None:
         raise RuntimeError("openpyxl is required to read Excel files")
 
-    workbook = load_workbook(file_path, read_only=True, data_only=True)
+    workbook = load_workbook(file_path, read_only=True, data_only=False)
     try:
         rows: list[BirthdayRow] = []
         skipped = 0
@@ -246,6 +246,11 @@ def read_excel_rows(file_path: str) -> tuple[list[BirthdayRow], int]:
             if not any(raw_row):
                 continue
 
+            if _row_has_formula_like_value(raw_row):
+                logger.warning("Skipping Excel row %s with formula-like cell", index)
+                skipped += 1
+                continue
+
             email = _excel_cell_text(_excel_row_value(raw_row, email_index))
             birthday_value = _excel_row_value(raw_row, birthday_index)
             birthday = _excel_birthday_mm_dd(birthday_value)
@@ -255,11 +260,7 @@ def read_excel_rows(file_path: str) -> tuple[list[BirthdayRow], int]:
                 continue
 
             if birthday is None:
-                logger.warning(
-                    "Skipping Excel row %s with invalid birthday: %s",
-                    index,
-                    _excel_cell_text(birthday_value),
-                )
+                logger.warning("Skipping Excel row %s with invalid birthday", index)
                 skipped += 1
                 continue
 
@@ -277,7 +278,11 @@ def parse_rows(values: list[list[str]]) -> list[BirthdayRow]:
 
     headers = [cell.strip().lower() for cell in values[0]]
     rows: list[BirthdayRow] = []
-    for raw_row in values[1:]:
+    for index, raw_row in enumerate(values[1:], start=2):
+        if _row_has_formula_like_value(raw_row):
+            logger.warning("Skipping HR row %s with formula-like cell", index)
+            continue
+
         row = _row_dict(headers, raw_row)
         email = (row.get("email") or "").strip()
         if not email:
@@ -285,7 +290,7 @@ def parse_rows(values: list[list[str]]) -> list[BirthdayRow]:
 
         birthday = _parse_birthday(row)
         if birthday is None:
-            logger.warning("Skipping HR row with invalid birthday: %s", email)
+            logger.warning("Skipping HR row with invalid birthday: %s", redact_email(email))
             continue
 
         birth_month, birth_day = birthday
@@ -304,6 +309,14 @@ def _excel_cell_text(value: object) -> str:
 
 def _excel_row_value(row: tuple[object, ...], index: int) -> object | None:
     return row[index] if index < len(row) else None
+
+
+def _row_has_formula_like_value(row: tuple[object, ...] | list[str]) -> bool:
+    return any(_is_formula_like_text(_excel_cell_text(value)) for value in row)
+
+
+def _is_formula_like_text(value: str) -> bool:
+    return bool(value) and value[0] in {"=", "+", "-", "@"}
 
 
 def _excel_header_indexes(row: tuple[object, ...]) -> tuple[int, int] | None:

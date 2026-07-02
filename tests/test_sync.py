@@ -52,6 +52,24 @@ def test_excel_birthday_formats_use_supported_month_day_values(tmp_path) -> None
     ]
 
 
+def test_read_excel_rows_skips_formula_like_cells(tmp_path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["birthday", "email"])
+    sheet.append(["03-21", "=HYPERLINK(\"https://example.com\")"])
+    sheet.append(["=DATE(2026,3,22)", "formula-birthday@example.com"])
+    sheet.append(["03-23", "safe@example.com"])
+    file_path = tmp_path / "employees.xlsx"
+    workbook.save(file_path)
+
+    rows, skipped = read_excel_rows(str(file_path))
+
+    assert skipped == 2
+    assert [(row.email, row.birth_month, row.birth_day) for row in rows] == [
+        ("safe@example.com", 3, 23),
+    ]
+
+
 def test_parse_rows_accepts_documented_birthday_formats() -> None:
     rows = parse_rows(
         [
@@ -67,6 +85,21 @@ def test_parse_rows_accepts_documented_birthday_formats() -> None:
         ("dash-year@example.com", 3, 21),
         ("year@example.com", 3, 22),
         ("slash@example.com", 3, 23),
+    ]
+
+
+def test_parse_rows_skips_formula_like_cells() -> None:
+    rows = parse_rows(
+        [
+            ["birthday", "email"],
+            ["03-21", "@attacker@example.com"],
+            ["=DATE(2026,3,22)", "formula-birthday@example.com"],
+            ["03-23", "safe@example.com"],
+        ]
+    )
+
+    assert [(row.email, row.birth_month, row.birth_day) for row in rows] == [
+        ("safe@example.com", 3, 23),
     ]
 
 

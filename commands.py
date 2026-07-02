@@ -167,20 +167,14 @@ async def route_birthday_command(
     if text == "status":
         try:
             trace_id = command_trace_id(command)
-            logger.info(
-                "Birthday status requested trace_id=%s user_id=%s text=%r",
-                trace_id,
-                slack_user_id,
-                raw_text,
-            )
+            logger.info("Birthday status requested trace_id=%s", trace_id)
             receive_wishes = await db.get_receive_wishes(pool, slack_user_id)
             birthday_record = await db.fetch_active_birthday_for_user(pool, slack_user_id)
             logger.info(
-                "Birthday status birthday_record trace_id=%s user_id=%s receive_wishes=%s record=%r",
+                "Birthday status loaded trace_id=%s receive_wishes=%s registered=%s",
                 trace_id,
-                slack_user_id,
                 receive_wishes,
-                birthday_record,
+                birthday_record is not None,
             )
             status = (
                 "현재 생일 공지를 받고 계세요 🎂"
@@ -189,12 +183,7 @@ async def route_birthday_command(
             )
             birthday_status = format_birthday_status(birthday_record)
             response_text = f"{status}\n{birthday_status}"
-            logger.info(
-                "Birthday status responding trace_id=%s user_id=%s response=%r",
-                trace_id,
-                slack_user_id,
-                response_text,
-            )
+            logger.info("Birthday status responding trace_id=%s", trace_id)
             await respond(
                 text=response_text,
                 response_type="ephemeral",
@@ -318,12 +307,7 @@ async def handle_admin_command(
                 return
 
             birth_month, birth_day = birthday
-            logger.info(
-                "Admin set birthday target user_id=%s date=%s-%s",
-                target_user_id,
-                birth_month,
-                birth_day,
-            )
+            logger.info("Admin set birthday target validated")
             await db.upsert_birthday(
                 pool,
                 slack_user_id=target_user_id,
@@ -651,7 +635,7 @@ async def send_test_birthday(*, settings: Any, target_user_id: str) -> None:
             text=DM_MESSAGE.format(slack_user_id=target_user_id),
         )
     except Exception as error:
-        logger.warning("Failed to send test birthday message", exc_info=True)
+        logger.warning("Failed to send test birthday message: %s", slack_error_reason(error))
         raise SlackSendError(format_slack_send_error(error)) from error
 
 
@@ -673,5 +657,5 @@ async def send_test_weekend(*, settings: Any, target_user_id: str) -> None:
             text=dm_text,
         )
     except Exception as error:
-        logger.warning("Failed to send test weekend message", exc_info=True)
+        logger.warning("Failed to send test weekend message: %s", slack_error_reason(error))
         raise SlackSendError(format_slack_send_error(error)) from error
