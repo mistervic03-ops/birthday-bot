@@ -26,6 +26,13 @@ class FailingSlackClient(FakeSlackClient):
         raise error
 
 
+class DmTimeoutSlackClient(FakeSlackClient):
+    async def chat_postMessage(self, *, channel: str, text: str, **kwargs) -> None:
+        if channel == "UDMFAIL":
+            raise TimeoutError("dm timed out")
+        return await super().chat_postMessage(channel=channel, text=text, **kwargs)
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -39,6 +46,7 @@ def test_friday_sends_saturday_and_sunday_birthdays(monkeypatch) -> None:
     fetched_targets = []
     reserved_posts = []
     sent_posts = []
+    sent_dms = []
 
     async def fetch_birthdays_for_targets(pool, targets):
         fetched_targets.extend(targets)
@@ -57,11 +65,15 @@ def test_friday_sends_saturday_and_sunday_birthdays(monkeypatch) -> None:
     async def mark_birthday_post_sent(pool, slack_user_id, birthday_date, *, channel_ts):
         sent_posts.append((slack_user_id, birthday_date, channel_ts))
 
+    async def mark_birthday_dm_sent(pool, slack_user_id, birthday_date):
+        sent_dms.append((slack_user_id, birthday_date))
+
     monkeypatch.setattr(birthday.db, "fetch_birthdays_for_targets", fetch_birthdays_for_targets)
     monkeypatch.setattr(birthday.db, "birthday_send_lock", fake_lock)
     monkeypatch.setattr(birthday.db, "has_birthday_post", has_birthday_post)
     monkeypatch.setattr(birthday.db, "reserve_birthday_post", reserve_birthday_post)
     monkeypatch.setattr(birthday.db, "mark_birthday_post_sent", mark_birthday_post_sent)
+    monkeypatch.setattr(birthday.db, "mark_birthday_dm_sent", mark_birthday_dm_sent)
 
     client = FakeSlackClient()
     settings = SimpleNamespace(birthday_channel_id="CBIRTHDAY", timezone="Asia/Seoul")
@@ -82,6 +94,7 @@ def test_friday_sends_saturday_and_sunday_birthdays(monkeypatch) -> None:
         ("USAT", date(2026, 6, 20), "1.000"),
         ("USUN", date(2026, 6, 21), "3.000"),
     ]
+    assert sent_dms == [("USAT", date(2026, 6, 20)), ("USUN", date(2026, 6, 21))]
 
 
 def test_non_friday_does_not_check_weekend_birthdays(monkeypatch) -> None:
@@ -170,3 +183,61 @@ def test_channel_post_failure_is_marked_failed_and_not_dm(monkeypatch) -> None:
     )
 
     assert failed_posts == [("UUSER", date(2026, 6, 19), "ratelimited")]
+
+
+def test_non_slack_dm_failure_does_not_stop_remaining_birthdays(monkeypatch) -> None:
+    sent_posts = []
+    sent_dms = []
+    failed_dms = []
+
+    async def fetch_birthdays_for_targets(pool, targets):
+        return [
+            {"slack_user_id": "UDMFAIL", "birth_month": 6, "birth_day": 19, "receive_wishes": True},
+            {"slack_user_id": "UOK", "birth_month": 6, "birth_day": 19, "receive_wishes": True},
+        ]
+
+    async def has_birthday_post(pool, slack_user_id, birthday_date):
+        return False
+
+    async def reserve_birthday_post(pool, slack_user_id, birthday_date):
+        return True
+
+    async def mark_birthday_post_sent(pool, slack_user_id, birthday_date, *, channel_ts):
+        sent_posts.append((slack_user_id, birthday_date, channel_ts))
+
+    async def mark_birthday_dm_sent(pool, slack_user_id, birthday_date):
+        sent_dms.append((slack_user_id, birthday_date))
+
+    async def mark_birthday_dm_failed(pool, slack_user_id, birthday_date, *, error):
+        failed_dms.append((slack_user_id, birthday_date, error))
+
+    monkeypatch.setattr(birthday.db, "fetch_birthdays_for_targets", fetch_birthdays_for_targets)
+    monkeypatch.setattr(birthday.db, "birthday_send_lock", fake_lock)
+    monkeypatch.setattr(birthday.db, "has_birthday_post", has_birthday_post)
+    monkeypatch.setattr(birthday.db, "reserve_birthday_post", reserve_birthday_post)
+    monkeypatch.setattr(birthday.db, "mark_birthday_post_sent", mark_birthday_post_sent)
+    monkeypatch.setattr(birthday.db, "mark_birthday_dm_sent", mark_birthday_dm_sent)
+    monkeypatch.setattr(birthday.db, "mark_birthday_dm_failed", mark_birthday_dm_failed)
+
+    client = DmTimeoutSlackClient()
+    settings = SimpleNamespace(birthday_channel_id="CBIRTHDAY", timezone="Asia/Seoul")
+    run(
+        birthday.send_today_birthdays(
+            pool=object(),
+            client=client,
+            settings=settings,
+            today=date(2026, 6, 19),
+        )
+    )
+
+    assert sent_posts == [
+        ("UDMFAIL", date(2026, 6, 19), "1.000"),
+        ("UOK", date(2026, 6, 19), "2.000"),
+    ]
+    assert failed_dms == [("UDMFAIL", date(2026, 6, 19), "TimeoutError")]
+    assert sent_dms == [("UOK", date(2026, 6, 19))]
+    assert [message["channel"] for message in client.messages] == [
+        "CBIRTHDAY",
+        "CBIRTHDAY",
+        "UOK",
+    ]

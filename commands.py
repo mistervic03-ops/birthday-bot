@@ -246,6 +246,7 @@ async def handle_admin_command(
                 f"{await slack_display_name(row['slack_user_id'], record_get(row, 'email'))} — "
                 f"{birthday_post_status_label(record_get(row, 'status', 'sent'))}"
                 f"{birthday_post_error_suffix(record_get(row, 'error'))}"
+                f"{birthday_post_dm_suffix(record_get(row, 'dm_status'), record_get(row, 'dm_error'))}"
                 for row in rows
             ]
             await respond(
@@ -490,6 +491,17 @@ def birthday_post_status_label(status: str) -> str:
 
 def birthday_post_error_suffix(error: str | None) -> str:
     return f" ({error})" if error else ""
+
+
+def birthday_post_dm_suffix(status: str | None, error: str | None = None) -> str:
+    if status is None:
+        return ""
+
+    label = {
+        "sent": "DM 발송완료",
+        "failed": "DM 발송실패",
+    }.get(status, f"DM {status}")
+    return f" / {label}{birthday_post_error_suffix(error)}"
 
 
 def format_birthday_status(row: Any | None) -> str:

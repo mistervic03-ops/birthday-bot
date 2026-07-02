@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 
 import pytest
 
@@ -71,6 +72,32 @@ def test_mark_missing_birthdays_inactive_only_targets_hr_rows() -> None:
     assert args == (["UHR"],)
 
 
+def test_mark_birthday_dm_sent_updates_dm_status() -> None:
+    pool = FakePool()
+
+    birthday_date = date(2026, 6, 19)
+
+    run(db.mark_birthday_dm_sent(pool, "UUSER", birthday_date))
+
+    sql, args = pool.execute_calls[0]
+    assert "dm_status = 'sent'" in sql
+    assert "dm_error = NULL" in sql
+    assert args == ("UUSER", birthday_date)
+
+
+def test_mark_birthday_dm_failed_stores_redacted_reason() -> None:
+    pool = FakePool()
+
+    birthday_date = date(2026, 6, 19)
+
+    run(db.mark_birthday_dm_failed(pool, "UUSER", birthday_date, error="TimeoutError"))
+
+    sql, args = pool.execute_calls[0]
+    assert "dm_status = 'failed'" in sql
+    assert "dm_error = $3" in sql
+    assert args == ("UUSER", birthday_date, "TimeoutError")
+
+
 def test_birthdays_migration_adds_source_and_restores_manual_rows() -> None:
     assert "source          VARCHAR(20) NOT NULL DEFAULT 'hr'" in db.CREATE_SCHEMA_SQL
     assert "ALTER TABLE birthdays ADD COLUMN source VARCHAR(20)" in db.MIGRATE_SCHEMA_SQL
@@ -78,3 +105,8 @@ def test_birthdays_migration_adds_source_and_restores_manual_rows() -> None:
     assert "WHERE source = 'manual'" in db.MIGRATE_SCHEMA_SQL
     assert "AND is_active = FALSE" in db.MIGRATE_SCHEMA_SQL
     assert "birthdays_source_check" in db.MIGRATE_SCHEMA_SQL
+
+
+def test_create_schema_includes_dm_status_columns() -> None:
+    assert "dm_status       VARCHAR(20) CHECK (dm_status IN ('sent', 'failed'))" in db.CREATE_SCHEMA_SQL
+    assert "dm_error        TEXT" in db.CREATE_SCHEMA_SQL

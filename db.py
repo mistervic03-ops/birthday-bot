@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS birthday_posts (
     status          VARCHAR(20) NOT NULL DEFAULT 'sent' CHECK (status IN ('sending', 'sent', 'failed')),
     channel_ts      TEXT,
     error           TEXT,
+    dm_status       VARCHAR(20) CHECK (dm_status IN ('sent', 'failed')),
+    dm_error        TEXT,
     posted_at       TIMESTAMPTZ DEFAULT NOW(),
     sent_at         TIMESTAMPTZ,
     updated_at      TIMESTAMPTZ DEFAULT NOW(),
@@ -204,6 +206,8 @@ async def fetch_recent_birthday_posts(pool: asyncpg.Pool, limit: int = 30) -> li
             COALESCE(p.sent_at, p.posted_at) AS posted_at,
             p.status,
             p.error,
+            p.dm_status,
+            p.dm_error,
             b.email
         FROM birthday_posts p
         LEFT JOIN birthdays b ON b.slack_user_id = p.slack_user_id
@@ -328,6 +332,43 @@ async def mark_birthday_post_failed(
         UPDATE birthday_posts
         SET status = 'failed',
             error = $3,
+            updated_at = NOW()
+        WHERE slack_user_id = $1 AND birthday_date = $2
+        """,
+        slack_user_id,
+        birthday_date,
+        error[:500],
+    )
+
+
+async def mark_birthday_dm_sent(
+    pool: asyncpg.Pool, slack_user_id: str, birthday_date: date
+) -> None:
+    await pool.execute(
+        """
+        UPDATE birthday_posts
+        SET dm_status = 'sent',
+            dm_error = NULL,
+            updated_at = NOW()
+        WHERE slack_user_id = $1 AND birthday_date = $2
+        """,
+        slack_user_id,
+        birthday_date,
+    )
+
+
+async def mark_birthday_dm_failed(
+    pool: asyncpg.Pool,
+    slack_user_id: str,
+    birthday_date: date,
+    *,
+    error: str,
+) -> None:
+    await pool.execute(
+        """
+        UPDATE birthday_posts
+        SET dm_status = 'failed',
+            dm_error = $3,
             updated_at = NOW()
         WHERE slack_user_id = $1 AND birthday_date = $2
         """,

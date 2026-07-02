@@ -181,6 +181,8 @@ def test_admin_list_and_log_render_success(monkeypatch) -> None:
                 "slack_user_id": "UUSER",
                 "birthday_date": date(2026, 6, 17),
                 "posted_at": datetime(2026, 6, 17, 9, 0),
+                "dm_status": "failed",
+                "dm_error": "TimeoutError",
                 "email": "u@example.com",
             }
         ]
@@ -211,7 +213,7 @@ def test_admin_list_and_log_render_success(monkeypatch) -> None:
         "response_type": "ephemeral",
     }
     assert responses[1] == {
-        "text": "2026-06-17 홍길동 — 발송완료",
+        "text": "2026-06-17 홍길동 — 발송완료 / DM 발송실패 (TimeoutError)",
         "response_type": "ephemeral",
     }
 

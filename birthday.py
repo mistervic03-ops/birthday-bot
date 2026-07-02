@@ -170,11 +170,33 @@ async def send_today_birthdays(
                 )
                 continue
 
-            await send_birthday_dm(client, slack_user_id, dm_message_for_target(today, birthday_date))
+            try:
+                await send_birthday_dm(client, slack_user_id, dm_message_for_target(today, birthday_date))
+            except Exception as error:
+                reason = slack_error_reason(error)
+                try:
+                    await db.mark_birthday_dm_failed(
+                        pool,
+                        slack_user_id,
+                        birthday_date,
+                        error=reason,
+                    )
+                except Exception as db_error:
+                    logger.critical(
+                        "Failed to mark birthday DM failure: %s",
+                        db_error.__class__.__name__,
+                    )
+                logger.warning("Failed to send birthday DM: %s", reason)
+                continue
+
+            try:
+                await db.mark_birthday_dm_sent(pool, slack_user_id, birthday_date)
+            except Exception as error:
+                logger.critical(
+                    "Failed to mark birthday DM success: %s",
+                    error.__class__.__name__,
+                )
 
 
 async def send_birthday_dm(client: AsyncWebClient, slack_user_id: str, message: str = DM_MESSAGE) -> None:
-    try:
-        await client.chat_postMessage(channel=slack_user_id, text=message.format(slack_user_id=slack_user_id))
-    except SlackApiError:
-        logger.warning("Failed to send birthday DM to %s", slack_user_id, exc_info=True)
+    await client.chat_postMessage(channel=slack_user_id, text=message.format(slack_user_id=slack_user_id))
